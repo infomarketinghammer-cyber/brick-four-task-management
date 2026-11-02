@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+.bg-gradient-brand {
+  background: linear-gradient(135deg, #023b77, #039583);
+}
+
+/* =========================================================
+   FullCalendar Custom Styling & High-Contrast Overrides
+   ========================================================= */
+
+.fullcalendar-custom-wrapper .fc {
+  font-family: inherit;
+  --fc-border-color: #f1f5f9;
+  --fc-page-bg-color: #ffffff;
+  --fc-neutral-bg-color: #f8fafc;
+  --fc-list-event-hover-bg-color: #f8fafc;
+  --fc-today-bg-color: #f8fafc;
+}
+
+/* Day grid cell styling */
+.fullcalendar-custom-wrapper .fc-daygrid-day-number {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #475569;
+  padding: 4px 8px;
+}
+
+.fullcalendar-custom-wrapper .fc-col-header-cell-cushion {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  padding: 10px 0 !important;
+}
+
+/* Base event container overrides: strip fullcalendar default borders/backgrounds */
+.fullcalendar-custom-wrapper .fc-daygrid-event,
+.fullcalendar-custom-wrapper .fc-timegrid-event,
+.fullcalendar-custom-wrapper .fc-h-event,
+.fullcalendar-custom-wrapper .fc-v-event {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  margin-bottom: 2px !important;
+  padding: 0 !important;
+}
+
+.fullcalendar-custom-wrapper .fc-daygrid-event:hover,
+.fullcalendar-custom-wrapper .fc-timegrid-event:hover {
+  filter: brightness(0.95);
+}
+
+.fullcalendar-custom-wrapper .fc-daygrid-dot-event {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.fullcalendar-custom-wrapper .fc-daygrid-dot-event .fc-daygrid-event-dot {
+  display: none !important;
+}
+
+.fullcalendar-custom-wrapper .fc-event-main {
+  padding: 0 !important;
+  width: 100% !important;
+}
+
+/* List view styling */
+.fullcalendar-custom-wrapper .fc-list-event-dot {
+  display: inline-block !important;
+}
+
+.fullcalendar-custom-wrapper .fc-list-day-cushion {
+  background-color: #f8fafc !important;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #334155;
+}

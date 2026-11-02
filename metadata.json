@@ -1,0 +1,8 @@
+{
+  "name": "brickfour Task Management System ",
+  "description": "Prisma database schema for a 4-level hierarchical task management system with delegation, recurrence, approvals, messaging, and audit logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
