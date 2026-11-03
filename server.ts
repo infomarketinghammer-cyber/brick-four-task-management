@@ -6,7 +6,6 @@ import fs from 'fs';
 import cors from 'cors';
 import helmet from 'helmet';
 import multer from 'multer';
-import { createServer as createViteServer } from 'vite';
 
 import authRoutes from './src/modules/auth/auth.routes';
 import userRoutes from './src/modules/users/users.routes';
@@ -59,9 +58,9 @@ import {
   loadMessagesFromMongo,
 } from './src/db/mongodb';
 
-async function startServer() {
+/** Builds the Express app with every API route. Shared by the long-running server and the Vercel function. */
+export function createApp() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
 
   // Security Hardening: Helmet Security Headers (configured for AI Studio preview iframe compatibility)
   app.use(
@@ -107,11 +106,6 @@ async function startServer() {
 
   // Global API Rate Limiting (1000 req per 15 min)
   app.use('/api', rateLimit(15 * 60 * 1000, 1000));
-
-  // Create HTTP server for Socket.IO
-  const httpServer = http.createServer(app);
-  initializeSockets(httpServer);
-  initializeCronJobs();
 
   app.use('/api/v1/users', userRoutes);
   app.use('/api/v1', todosRoutes);
@@ -2074,6 +2068,18 @@ async function startServer() {
   // Global Error Handler
   app.use(errorHandler);
 
+  return app;
+}
+
+async function startServer() {
+  const app = createApp();
+  const PORT = Number(process.env.PORT) || 3000;
+
+  // Create HTTP server for Socket.IO
+  const httpServer = http.createServer(app);
+  initializeSockets(httpServer);
+  initializeCronJobs();
+
   // Vite Middleware in Dev Mode with fallback
   const distPath = path.join(process.cwd(), 'dist');
   if (process.env.NODE_ENV === 'production' && fs.existsSync(path.join(distPath, 'index.html'))) {
@@ -2082,6 +2088,7 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -2116,4 +2123,7 @@ async function startServer() {
   });
 }
 
-startServer();
+// On Vercel the app is served by api/index.ts instead of a long-running server
+if (!process.env.VERCEL) {
+  startServer();
+}

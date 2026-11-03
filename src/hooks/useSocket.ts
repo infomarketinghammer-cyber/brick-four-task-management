@@ -10,6 +10,9 @@ export function useSocket() {
   const { user, isAuthenticated } = useAuthStore();
 
   useEffect(() => {
+    // Serverless hosting (Vercel) has no Socket.IO server; queries fall back to polling
+    if (import.meta.env.VITE_REALTIME === 'off') return;
+
     if (!isAuthenticated || !user) {
       if (socketRef.current) {
         socketRef.current.disconnect();
