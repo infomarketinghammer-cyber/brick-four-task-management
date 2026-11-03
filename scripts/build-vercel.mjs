@@ -27,7 +27,7 @@ await esbuild({
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  target: 'node20',
+  target: 'node22',
   sourcemap: true,
   // vite is only used by the local dev server; the rest are optional native add-ons of mongodb/ws
   external: [
@@ -52,7 +52,7 @@ await esbuild({
 
 fs.writeFileSync(
   path.join(funcDir, '.vc-config.json'),
-  JSON.stringify({ runtime: 'nodejs20.x', handler: 'index.cjs', launcherType: 'Nodejs', maxDuration: 30 }, null, 2)
+  JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.cjs', launcherType: 'Nodejs', maxDuration: 30 }, null, 2)
 );
 
 // 3. Routing: API calls go to the function; everything else is a static file or the SPA entry
