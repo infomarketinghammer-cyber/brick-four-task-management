@@ -848,14 +848,16 @@ export function OrgChart() {
                       </div>
                     )}
 
-                    {/* Sanghshil's Team: Atul, Kapil, Nishant, Omkar, Sonal (+ Bhagyashree), Sachin */}
+                    {/* Sanghshil's Team: Atul, Kapil, Nishant, Omkar (siblings) — Sonal under Kapil, Sachin under Omkar */}
                     {pillar.name.toLowerCase().includes('sanghshil') && sanghshilNode && (
                       <div className="flex flex-col items-center mt-0 w-full">
                         <div className="w-[2px] h-6 bg-slate-300" />
                         {/* Sub-bus for Sanghshil's subordinates */}
-                        <div className="w-full relative pt-0">
-                          <div className="absolute top-0 left-[60px] right-[60px] h-[2px] bg-slate-300 z-10" />
-                          <div className="grid grid-cols-3 gap-3 w-full">
+                        <div className="w-full relative pt-0 flex justify-center">
+                          <div className="absolute top-0 left-[100px] right-[100px] h-[2px] bg-slate-300 z-10" />
+                          {/* flex-nowrap keeps every direct report on one row, however many there are,
+                              so a sibling never wraps underneath another and looks like its subordinate */}
+                          <div className="flex flex-row flex-nowrap justify-center gap-3">
                             {sanghshilNode.directReports.map((subNode) => (
                               <div key={subNode.id} className="flex flex-col items-center">
                                 <div className="w-[2px] h-5 bg-slate-300" />
@@ -866,7 +868,7 @@ export function OrgChart() {
                                   onSelect={setSelectedEmployee}
                                 />
 
-                                {/* Sonal has Bhagyashree Patil */}
+                                {/* Kapil has Sonal, Omkar has Sachin */}
                                 {subNode.directReports && subNode.directReports.length > 0 && (
                                   <div className="flex flex-col items-center mt-0">
                                     <div className="w-[2px] h-5 bg-slate-300 relative flex items-center justify-center">
