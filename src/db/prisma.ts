@@ -161,7 +161,7 @@ class InMemoryDatabase {
         email: 'sanghshil@brickfour.com',
         phone: '9689423795',
         employee_no: 'BRKF019',
-        designation: 'Sales Manager',
+        designation: 'Sales Head',
         department: 'Sales',
         location: 'Yerwada',
         date_of_joining: '2024-09-19',

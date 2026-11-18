@@ -1,11 +1,18 @@
 import { Router } from 'express';
 import { TodosController } from './todos.controller';
 import { authenticate } from '../../middleware/auth';
+import { resyncIfStale } from '../../db/mongodb';
 
 const router = Router();
 
 // Protect all todo routes with authentication
 router.use(authenticate);
+// Pulls in todos/steps/lists created by a sibling warm serverless instance that this
+// instance's in-memory store hasn't seen yet (see resyncIfStale in db/mongodb.ts).
+router.use(async (req, res, next) => {
+  await resyncIfStale();
+  next();
+});
 
 // Reports
 router.get('/reports/todo-summary', TodosController.getTodoSummaryReport);

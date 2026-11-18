@@ -6,6 +6,7 @@ import {
   persistDeleteChecklistItem,
   persistActivityLog,
   persistNotification,
+  fetchTaskByIdFromMongo,
 } from './mongodb';
 
 export interface ActivityLogItem {
@@ -133,6 +134,18 @@ class TasksStore {
     this.reminders = [];
     this.notifications = new PersistedArray<NotificationItem>((notif) => persistNotification(notif));
     this.checklistItems.clear();
+  }
+
+  // Self-heals a cross-instance cache miss: if another warm serverless instance already
+  // has this task in Mongo but this one doesn't have it in memory yet, pull it in directly
+  // (bypassing the persist-on-set hook, since Mongo is already the source we just read from).
+  async getTaskOrHydrate(id: string): Promise<Task | undefined> {
+    const existing = this.tasks.get(id);
+    if (existing) return existing;
+    const fromMongo = await fetchTaskByIdFromMongo(id);
+    if (!fromMongo) return undefined;
+    Map.prototype.set.call(this.tasks, id, fromMongo);
+    return fromMongo;
   }
 }
 

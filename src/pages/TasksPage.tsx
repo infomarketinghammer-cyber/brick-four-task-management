@@ -55,7 +55,7 @@ export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [priorityFilter, setPriorityFilter] = useState<string>('ALL');
   const [assigneeFilter, setAssigneeFilter] = useState<string>('');
-  const [viewScope, setViewScope] = useState<'assigned_by_me' | 'my' | 'all'>('assigned_by_me');
+  const [viewScope, setViewScope] = useState<'assigned_by_me' | 'my' | 'all'>('my');
 
   // Fetch Users for Assignee dropdown
   const { data: usersData } = useQuery<{ users: User[] }>({
@@ -290,16 +290,8 @@ export function TasksPage() {
       {/* Filter Bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          {/* Scope presets: 1st Assigned/Created by Me, 2nd Assigned to Me, 3rd All Company Tasks */}
+          {/* Scope presets: 1st Assigned to Me (default), 2nd Assigned/Created by Me, 3rd All Company Tasks */}
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl w-fit">
-            <button
-              onClick={() => setViewScope('assigned_by_me')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
-                viewScope === 'assigned_by_me' ? 'bg-white text-purple-700 shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Assigned / Created by Me
-            </button>
             <button
               onClick={() => setViewScope('my')}
               className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
@@ -307,6 +299,14 @@ export function TasksPage() {
               }`}
             >
               Assigned to Me
+            </button>
+            <button
+              onClick={() => setViewScope('assigned_by_me')}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                viewScope === 'assigned_by_me' ? 'bg-white text-purple-700 shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Assigned / Created by Me
             </button>
             <button
               onClick={() => setViewScope('all')}
@@ -404,14 +404,14 @@ export function TasksPage() {
           )}
 
           {/* Clear Filters button */}
-          {(statusFilter !== 'ALL' || priorityFilter !== 'ALL' || assigneeFilter || search || viewScope !== 'all') && (
+          {(statusFilter !== 'ALL' || priorityFilter !== 'ALL' || assigneeFilter || search || viewScope !== 'my') && (
             <button
               onClick={() => {
                 setStatusFilter('ALL');
                 setPriorityFilter('ALL');
                 setAssigneeFilter('');
                 setSearch('');
-                setViewScope('all');
+                setViewScope('my');
               }}
               className="text-xs text-indigo-600 font-semibold hover:underline ml-auto"
             >
@@ -478,8 +478,13 @@ export function TasksPage() {
                       )}
                     </div>
 
-                    <h3 className="text-sm font-bold text-slate-900 group-hover:text-indigo-600 transition-colors block">
-                      {t.title}
+                    <h3 className="text-sm font-bold text-slate-900 group-hover:text-indigo-600 transition-colors flex items-center gap-1.5">
+                      {t.task_type === 'PROJECT' && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase bg-purple-100 text-purple-700 rounded shrink-0">
+                          <Layers size={10} /> Project
+                        </span>
+                      )}
+                      <span>{t.title}</span>
                     </h3>
 
                     {t.description && (
@@ -697,8 +702,13 @@ export function TasksPage() {
                           )}
                         </div>
 
-                        <h4 className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition-colors leading-snug">
-                          {t.title}
+                        <h4 className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition-colors leading-snug flex items-center gap-1.5">
+                          {t.task_type === 'PROJECT' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase bg-purple-100 text-purple-700 rounded shrink-0">
+                              <Layers size={10} /> Project
+                            </span>
+                          )}
+                          <span>{t.title}</span>
                         </h4>
 
                         <div className="space-y-1 pt-1 border-t border-slate-100">
@@ -811,8 +821,13 @@ export function TasksPage() {
                     </span>
                   </div>
 
-                  <h4 className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">
-                    {t.title}
+                  <h4 className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition-colors flex items-center gap-1.5">
+                    {t.task_type === 'PROJECT' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase bg-purple-100 text-purple-700 rounded shrink-0">
+                        <Layers size={10} /> Project
+                      </span>
+                    )}
+                    <span>{t.title}</span>
                   </h4>
 
                   <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-100">

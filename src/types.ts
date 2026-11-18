@@ -95,6 +95,10 @@ export interface Task {
   id: string;
   title: string;
   description?: string | null;
+  /** PROJECT tasks are containers created with multiple assignees: one real subtask (task_type
+   * TASK, parent_task_id = this task's id) is auto-created per selected employee, and this
+   * task's own progress/status rolls up from them via the normal Tier-3 parent/child logic. */
+  task_type?: 'TASK' | 'PROJECT';
   created_by_id: string;
   assigned_to_id: string;
   created_by_name?: string;

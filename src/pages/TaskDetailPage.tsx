@@ -140,18 +140,9 @@ export function TaskDetailPage() {
   const [showPreviousSubmissions, setShowPreviousSubmissions] = useState(false);
 
   // Fetch attachments from server
-  const { data: attachments = [], refetch: refetchAttachments } = useQuery<AttachmentRecord[]>({
-    queryKey: ['attachments', id],
-    queryFn: async () => {
-      const res: any = await apiClient.get(`/tasks/${id}/attachments`);
-      if (Array.isArray(res)) return res;
-      if (Array.isArray(res?.data)) return res.data;
-      return [];
-    },
-    enabled: !!id,
-  });
-
-  // Fetch single task details
+  // Fetch single task details first — every other query below depends on this one having
+  // succeeded, so none of them should even fire (and spam their own error toast) once this
+  // has already come back forbidden/not-found; the page shows one clean access-denied card.
   const {
     data: task,
     isLoading: isLoadingTask,
@@ -163,6 +154,20 @@ export function TaskDetailPage() {
       return res.data;
     },
     enabled: !!id,
+    retry: false,
+  });
+
+  const canLoadSubResources = !!id && !taskError;
+
+  const { data: attachments = [], refetch: refetchAttachments } = useQuery<AttachmentRecord[]>({
+    queryKey: ['attachments', id],
+    queryFn: async () => {
+      const res: any = await apiClient.get(`/tasks/${id}/attachments`);
+      if (Array.isArray(res)) return res;
+      if (Array.isArray(res?.data)) return res.data;
+      return [];
+    },
+    enabled: canLoadSubResources,
   });
 
   // Fetch child subtasks for this task
@@ -174,7 +179,7 @@ export function TaskDetailPage() {
       if (Array.isArray(res.data)) return res.data;
       return [];
     },
-    enabled: !!id,
+    enabled: canLoadSubResources,
   });
 
   // Fetch lineage / delegation breadcrumb chain
@@ -186,7 +191,7 @@ export function TaskDetailPage() {
       if (Array.isArray(res?.data)) return res.data;
       return [];
     },
-    enabled: !!id,
+    enabled: canLoadSubResources,
   });
 
   // Fetch comments
@@ -198,7 +203,7 @@ export function TaskDetailPage() {
       if (Array.isArray(res?.data)) return res.data;
       return [];
     },
-    enabled: !!id,
+    enabled: canLoadSubResources,
   });
 
   // Fetch activity logs
@@ -210,7 +215,7 @@ export function TaskDetailPage() {
       if (Array.isArray(res?.data)) return res.data;
       return [];
     },
-    enabled: !!id,
+    enabled: canLoadSubResources,
   });
 
   // Fetch assigned user details
@@ -486,7 +491,14 @@ export function TaskDetailPage() {
                 )
               )}
             </div>
-            <h1 className="text-lg font-bold text-slate-900 tracking-tight">{task.title}</h1>
+            <h1 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
+              {task.task_type === 'PROJECT' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase bg-purple-100 text-purple-700 rounded shrink-0">
+                  <Layers size={11} /> Project
+                </span>
+              )}
+              <span>{task.title}</span>
+            </h1>
           </div>
         </div>
 

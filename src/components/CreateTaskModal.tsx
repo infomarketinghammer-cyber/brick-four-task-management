@@ -41,7 +41,9 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [activeTab, setActiveTab] = useState<'write' | 'preview'>('write');
+  const [createMode, setCreateMode] = useState<'TASK' | 'PROJECT'>('TASK');
   const [assignedToId, setAssignedToId] = useState('');
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
   const [priority, setPriority] = useState<TaskPriority>('CRITICAL');
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
@@ -61,13 +63,16 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Subordinates (and peer department heads) for the Assignee Dropdown
-  const { subordinates: subordinatesList, peerHeads, isLoading: isLoadingSubordinates } = useAssignableUsers(isOpen);
+  // Org-wide assignable users for the Assignee picker: peers at my level (any department)
+  // plus anyone at a lower level (any department) — see useAssignableUsers.
+  const { assignableUsers, isLoading: isLoadingSubordinates } = useAssignableUsers(isOpen);
 
   // Set default assignee to current user when modal opens
   useEffect(() => {
     if (isOpen && currentUser) {
+      setCreateMode('TASK');
       setAssignedToId(currentUser.id);
+      setAssigneeIds([]);
       // Default dates
       const now = new Date();
       const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -117,6 +122,8 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   const resetForm = () => {
     setTitle('');
     setDescription('');
+    setCreateMode('TASK');
+    setAssigneeIds([]);
     setPriority('CRITICAL');
     setIsRecurring(false);
     setRecurrencePattern('WEEKLY');
@@ -136,6 +143,11 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
       return;
     }
 
+    if (createMode === 'PROJECT' && assigneeIds.length === 0) {
+      setErrorMessage('Select at least one employee to assign the project to');
+      return;
+    }
+
     const reminders = [];
     if (enableReminder) {
       if (reminderType === 'RELATIVE') {
@@ -151,17 +163,31 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
       }
     }
 
-    const payload = {
-      title: title.trim(),
-      description,
-      assigned_to_id: assignedToId || currentUser?.id,
-      priority,
-      start_date: startDate ? new Date(startDate).toISOString() : new Date().toISOString(),
-      due_date: dueDate ? new Date(dueDate).toISOString() : null,
-      is_recurring: isRecurring,
-      recurrence_pattern: isRecurring ? recurrencePattern : null,
-      reminders,
-    };
+    const payload =
+      createMode === 'PROJECT'
+        ? {
+            title: title.trim(),
+            description,
+            task_type: 'PROJECT' as const,
+            assignee_ids: assigneeIds,
+            priority,
+            start_date: startDate ? new Date(startDate).toISOString() : new Date().toISOString(),
+            due_date: dueDate ? new Date(dueDate).toISOString() : null,
+            is_recurring: isRecurring,
+            recurrence_pattern: isRecurring ? recurrencePattern : null,
+            reminders,
+          }
+        : {
+            title: title.trim(),
+            description,
+            assigned_to_id: assignedToId || currentUser?.id,
+            priority,
+            start_date: startDate ? new Date(startDate).toISOString() : new Date().toISOString(),
+            due_date: dueDate ? new Date(dueDate).toISOString() : null,
+            is_recurring: isRecurring,
+            recurrence_pattern: isRecurring ? recurrencePattern : null,
+            reminders,
+          };
 
     createTaskMutation.mutate(payload);
   };
@@ -173,8 +199,12 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
 
   if (!isOpen) return null;
 
-  const subordinateIds = new Set(subordinatesList.map((s) => s.id));
-  const peerHeadOptions = peerHeads.filter((h) => !subordinateIds.has(h.id));
+  // Group the org-wide assignable list by department for clearer browsing in the picker.
+  const assigneesByDept = assignableUsers.reduce<Record<string, typeof assignableUsers>>((acc, u) => {
+    const dept = u.department || 'Other';
+    (acc[dept] = acc[dept] || []).push(u);
+    return acc;
+  }, {});
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-hidden">
@@ -186,9 +216,11 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
               <Plus size={20} />
             </span>
             <div>
-              <h2 className="text-base font-bold text-slate-900">Create & Assign Task</h2>
+              <h2 className="text-base font-bold text-slate-900">
+                {createMode === 'PROJECT' ? 'Create & Assign Project' : 'Create & Assign Task'}
+              </h2>
               <p className="text-xs text-slate-500">
-                Assign tasks down your management chain with hierarchy governance.
+                Assign {createMode === 'PROJECT' ? 'projects' : 'tasks'} down your management chain with hierarchy governance.
               </p>
             </div>
           </div>
@@ -211,10 +243,32 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
               </div>
             )}
 
+          {/* Task vs Project Mode Toggle */}
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setCreateMode('TASK')}
+              className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                createMode === 'TASK' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Task (1 assignee)
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateMode('PROJECT')}
+              className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                createMode === 'PROJECT' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Project (multiple assignees)
+            </button>
+          </div>
+
           {/* Title Field */}
           <div className="space-y-1.5">
             <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-              <span>Task Title</span>
+              <span>{createMode === 'PROJECT' ? 'Project Title' : 'Task Title'}</span>
               <span className="text-red-500">*</span>
             </label>
             <input
@@ -222,7 +276,11 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., Upgrade API Authentication Middleware & Tokens"
+              placeholder={
+                createMode === 'PROJECT'
+                  ? 'e.g., Q1 Client Onboarding Rollout'
+                  : 'e.g., Upgrade API Authentication Middleware & Tokens'
+              }
               className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
             />
           </div>
@@ -311,54 +369,85 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
 
           {/* Assignee & Priority Row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Assignee Dropdown (fetches subordinates) */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                <UserIcon size={14} className="text-slate-400" />
-                <span>Assignee (Subordinate Chain)</span>
-              </label>
-              <select
-                value={assignedToId}
-                onChange={(e) => setAssignedToId(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
-              >
-                {currentUser && (
-                  <option value={currentUser.id}>
-                    Assign to Myself ({currentUser.name} - {currentUser.designation})
-                  </option>
-                )}
+            {createMode === 'TASK' ? (
+              /* Assignee Dropdown: self, any peer at my level, or anyone below my level — org-wide */
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                  <UserIcon size={14} className="text-slate-400" />
+                  <span>Assignee (My Level & Below, Org-Wide)</span>
+                </label>
+                <select
+                  value={assignedToId}
+                  onChange={(e) => setAssignedToId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
+                >
+                  {currentUser && (
+                    <option value={currentUser.id}>
+                      Assign to Myself ({currentUser.name} - {currentUser.designation})
+                    </option>
+                  )}
 
-                {isLoadingSubordinates ? (
-                  <option disabled>Loading subordinates...</option>
-                ) : (
-                  <>
-                    {subordinatesList.length > 0 && (
-                      <optgroup label="My Team">
-                        {subordinatesList.map((sub) => (
-                          <option key={sub.id} value={sub.id}>
-                            {sub.name} ({sub.designation} - Dept: {sub.department})
+                  {isLoadingSubordinates ? (
+                    <option disabled>Loading assignable employees...</option>
+                  ) : (
+                    Object.entries(assigneesByDept).map(([dept, people]) => (
+                      <optgroup key={dept} label={dept}>
+                        {people.map((person) => (
+                          <option key={person.id} value={person.id}>
+                            {person.name} ({person.designation})
                           </option>
                         ))}
                       </optgroup>
-                    )}
-                    {peerHeadOptions.length > 0 && (
-                      <optgroup label="Other Department Heads">
-                        {peerHeadOptions.map((head) => (
-                          <option key={head.id} value={head.id}>
-                            {head.name} (Head - {head.department})
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </>
-                )}
-              </select>
-              <p className="text-[10px] text-slate-400">
-                {peerHeadOptions.length > 0
-                  ? 'Assign within your team, or to another department head who can delegate it further.'
-                  : 'Only users within your reporting subtree can be assigned tasks.'}
-              </p>
-            </div>
+                    ))
+                  )}
+                </select>
+                <p className="text-[10px] text-slate-400">
+                  Assign to yourself, a peer at your level, or anyone below your level — in any department.
+                </p>
+              </div>
+            ) : (
+              /* Multi-select Assignee Picker for Projects */
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                  <UserIcon size={14} className="text-slate-400" />
+                  <span>Assignees ({assigneeIds.length} selected)</span>
+                </label>
+                <div className="w-full max-h-40 overflow-y-auto bg-slate-50 border border-slate-200 rounded-xl divide-y divide-slate-100">
+                  {isLoadingSubordinates ? (
+                    <div className="px-3 py-2.5 text-xs text-slate-400">Loading assignable employees...</div>
+                  ) : assignableUsers.length === 0 ? (
+                    <div className="px-3 py-2.5 text-xs text-slate-400">No one at or below your level to assign a project to.</div>
+                  ) : (
+                    assignableUsers.map((person) => {
+                      const checked = assigneeIds.includes(person.id);
+                      return (
+                        <label
+                          key={person.id}
+                          className="flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-slate-800 cursor-pointer hover:bg-white"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setAssigneeIds((prev) =>
+                                e.target.checked ? [...prev, person.id] : prev.filter((id) => id !== person.id)
+                              );
+                            }}
+                            className="text-indigo-600 focus:ring-indigo-500 rounded"
+                          />
+                          <span>
+                            {person.name} ({person.designation} - Dept: {person.department})
+                          </span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Each selected employee gets their own tracked task; the project auto-completes once everyone finishes.
+                </p>
+              </div>
+            )}
 
             {/* Priority Selector */}
             <div className="space-y-1.5">
@@ -433,7 +522,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Repeat size={16} className="text-indigo-600" />
-                <span className="text-xs font-bold text-slate-900">Task Recurrence</span>
+                <span className="text-xs font-bold text-slate-900">{createMode === 'PROJECT' ? 'Project Recurrence' : 'Task Recurrence'}</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
@@ -554,12 +643,12 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
               {createTaskMutation.isPending ? (
                 <>
                   <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Creating Task...</span>
+                  <span>{createMode === 'PROJECT' ? 'Creating Project...' : 'Creating Task...'}</span>
                 </>
               ) : (
                 <>
                   <CheckCircle2 size={16} />
-                  <span>Assign & Launch Task</span>
+                  <span>{createMode === 'PROJECT' ? 'Assign & Launch Project' : 'Assign & Launch Task'}</span>
                 </>
               )}
             </button>

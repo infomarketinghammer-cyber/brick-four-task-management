@@ -12,6 +12,13 @@ export const apiClient = axios.create({
 const NETWORK_ERROR_TOAST_COOLDOWN_MS = 15_000;
 let lastNetworkErrorToastAt = 0;
 
+// Several parallel queries on one page (e.g. task + attachments + comments + activity) can
+// all fail for the same underlying reason at once — dedupe so the user sees one toast, not
+// a stack of identical ones.
+const ERROR_TOAST_DEDUPE_MS = 3_000;
+let lastErrorToastKey = '';
+let lastErrorToastAt = 0;
+
 let isRefreshing = false;
 let failedQueue: Array<{
   resolve: (token: string) => void;
@@ -138,13 +145,21 @@ apiClient.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Show toast for non-auth errors
+    // Show toast for non-auth errors, deduped so parallel queries failing for the same
+    // reason (e.g. a forbidden task plus its attachments/comments/activity sub-requests)
+    // show one toast instead of a stack of identical ones.
     if (error.response?.status !== 401) {
-      showToast({
-        type: 'error',
-        title: apiError?.code ? `Error (${apiError.code})` : 'Request Failed',
-        message: errorMessage,
-      });
+      const toastKey = `${apiError?.code || error.response?.status}:${errorMessage}`;
+      const now = Date.now();
+      if (toastKey !== lastErrorToastKey || now - lastErrorToastAt > ERROR_TOAST_DEDUPE_MS) {
+        lastErrorToastKey = toastKey;
+        lastErrorToastAt = now;
+        showToast({
+          type: 'error',
+          title: apiError?.code ? `Error (${apiError.code})` : 'Request Failed',
+          message: errorMessage,
+        });
+      }
     }
 
     return Promise.reject(error);

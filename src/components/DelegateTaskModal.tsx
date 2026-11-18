@@ -27,8 +27,8 @@ export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskM
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Subordinates (and peer department heads) for assignment
-  const { subordinates: subordinatesList, peerHeads, isLoading: isLoadingSubordinates } = useAssignableUsers(isOpen);
+  // Org-wide assignable users: peers at my level (any department) plus anyone below my level
+  const { assignableUsers, isLoading: isLoadingSubordinates } = useAssignableUsers(isOpen);
 
   const delegateMutation = useMutation({
     mutationFn: async (payload: any) => {
@@ -66,8 +66,12 @@ export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskM
 
   if (!isOpen) return null;
 
-  const subordinateIds = new Set(subordinatesList.map((s) => s.id));
-  const peerHeadOptions = peerHeads.filter((h) => !subordinateIds.has(h.id) && h.id !== parentTask.created_by_id);
+  const delegateOptions = assignableUsers.filter((u) => u.id !== parentTask.created_by_id);
+  const optionsByDept = delegateOptions.reduce<Record<string, typeof delegateOptions>>((acc, u) => {
+    const dept = u.department || 'Other';
+    (acc[dept] = acc[dept] || []).push(u);
+    return acc;
+  }, {});
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,11 +136,11 @@ export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskM
             <p className="text-xs font-bold text-slate-900 line-clamp-1">{parentTask.title}</p>
           </div>
 
-          {/* Subordinate Selector */}
+          {/* Assignee Selector: peers at my level, or anyone below my level — org-wide */}
           <div className="space-y-1.5">
             <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
               <UserIcon size={14} className="text-slate-400" />
-              <span>Select Subordinate Assignee</span>
+              <span>Select Assignee (My Level & Below, Org-Wide)</span>
               <span className="text-red-500">*</span>
             </label>
             <select
@@ -145,30 +149,19 @@ export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskM
               onChange={(e) => setSubordinateId(e.target.value)}
               className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
             >
-              <option value="">-- Select Direct or Indirect Subordinate --</option>
+              <option value="">-- Select Assignee --</option>
               {isLoadingSubordinates ? (
-                <option disabled>Loading subordinates...</option>
+                <option disabled>Loading assignable employees...</option>
               ) : (
-                <>
-                  {subordinatesList.length > 0 && (
-                    <optgroup label="My Team">
-                      {subordinatesList.map((sub) => (
-                        <option key={sub.id} value={sub.id}>
-                          {sub.name} ({sub.designation} - Dept: {sub.department})
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {peerHeadOptions.length > 0 && (
-                    <optgroup label="Other Department Heads">
-                      {peerHeadOptions.map((head) => (
-                        <option key={head.id} value={head.id}>
-                          {head.name} (Head - {head.department})
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </>
+                Object.entries(optionsByDept).map(([dept, people]) => (
+                  <optgroup key={dept} label={dept}>
+                    {people.map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.name} ({person.designation})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
               )}
             </select>
           </div>

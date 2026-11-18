@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { User } from '../types';
+import { queryClient } from '../lib/queryClient';
 
 interface AuthState {
   user: User | null;
@@ -21,6 +22,10 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
 
       setAuth: (user, accessToken, refreshToken) => {
+        // Cleared synchronously here (not in a useEffect reacting to the state change) so
+        // whichever page the app navigates to next mounts with an empty cache instead of
+        // briefly rendering the previous session's cached (wrongly-scoped) query results.
+        queryClient.clear();
         set({
           user,
           accessToken,
@@ -36,6 +41,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
+        queryClient.clear();
         set({
           user: null,
           accessToken: null,

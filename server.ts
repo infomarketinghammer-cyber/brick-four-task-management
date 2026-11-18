@@ -16,11 +16,12 @@ import kpiRoutes from './src/modules/kpi/kpi.routes';
 import { calendarStore } from './src/db/calendarStore';
 import { errorHandler } from './src/middleware/errorHandler';
 import { rateLimit } from './src/middleware/rateLimit';
-import { initializeCronJobs } from './src/jobs';
+import { initializeCronJobs, runScheduledJobsIfDue } from './src/jobs';
 import { initializeSockets, getIO } from './src/sockets';
 import { sendSuccess } from './src/utils/envelope';
 import { authenticate } from './src/middleware/auth';
-import { tasksStore } from './src/db/tasksStore';
+import { tasksStore, NotificationItem } from './src/db/tasksStore';
+import { todosStore } from './src/db/todosStore';
 import { attachmentsStore, AttachmentRecord, UPLOADS_DIR } from './src/db/attachmentsStore';
 import { dbStore } from './src/db/prisma';
 import {
@@ -31,7 +32,6 @@ import {
   canChangeStatus,
   canEditPriority,
   getTaskActorRole,
-  isPeerDeptHeadAssignment,
 } from './src/permissions';
 import { validateTransition } from './src/taskStateMachine';
 import { sanitizeRichText } from './src/utils/sanitizer';
@@ -56,6 +56,10 @@ import {
   persistMessage,
   loadConversationsFromMongo,
   loadMessagesFromMongo,
+  resyncIfStale,
+  persistComment,
+  fetchCommentsForTaskFromMongo,
+  persistNotification,
 } from './src/db/mongodb';
 
 /** Builds the Express app with every API route. Shared by the long-running server and the Vercel function. */
@@ -116,6 +120,16 @@ export function createApp() {
   // Router for Dashboard, Tasks, Notifications, Conversations & Reports
   const apiRouter = express.Router();
   apiRouter.use(authenticate);
+  // On Vercel, a sibling warm instance may have created data this instance's in-memory
+  // stores don't know about yet (tasks, notifications, activity, calendar, todos). Cheaply
+  // re-pulls from MongoDB if it's been a while since this instance last checked.
+  apiRouter.use(async (req, res, next) => {
+    await resyncIfStale();
+    // node-cron's schedules never fire on Vercel (no persistent process), so overdue-sweep
+    // and reminder dispatch piggyback on normal request traffic instead.
+    runScheduledJobsIfDue();
+    next();
+  });
 
   // Task lookup used by canViewTask to resolve the upstream delegation chain
   const getTask = (id: string) => tasksStore.tasks.get(id);
@@ -205,6 +219,19 @@ export function createApp() {
 
   apiRouter.get('/dashboard/kpis', getDashboardKPIs);
   apiRouter.get('/reports/dashboard', getDashboardKPIs);
+
+  // On Vercel, concurrent requests can land on different warm serverless instances whose
+  // in-memory tasksStore was hydrated at a different (earlier) cold start, so a task created
+  // moments ago on one instance can 404 on another's sub-resource routes (comments, activity,
+  // lineage, attachments, checklist) even though the main task fetch succeeds. Self-heal by
+  // pulling the task straight from MongoDB into this instance's cache before those handlers run.
+  apiRouter.use('/tasks/:taskParam', async (req, res, next) => {
+    const taskParam = req.params.taskParam;
+    if (taskParam && taskParam.startsWith('tsk-') && !tasksStore.tasks.has(taskParam)) {
+      await tasksStore.getTaskOrHydrate(taskParam);
+    }
+    next();
+  });
 
   // MY TASKS
   apiRouter.get('/tasks/my-tasks', (req, res) => {
@@ -374,11 +401,125 @@ export function createApp() {
   });
 
   // CREATE TASK WITH SERVER-SIDE HTML SANITIZATION & ASSIGNMENT CHECK
+  // Schedules RELATIVE/ABSOLUTE reminders for a newly created task (assignee + assigner).
+  // Shared by both single-assignee tasks and each per-employee subtask of a Project.
+  function createReminders(taskId: string, task: Task, reminders: unknown) {
+    if (!Array.isArray(reminders)) return;
+    reminders.forEach((r: any, idx: number) => {
+      const rType = r.type || 'RELATIVE';
+      const relativeMinutes = Number(r.relativeMinutes ?? r.relative_minutes_before ?? 15);
+      let scheduledAt: string | null = null;
+
+      if (rType === 'RELATIVE') {
+        if (!task.due_date) return; // Skip relative reminder if task has no due_date
+        const dueDateMs = new Date(task.due_date).getTime();
+        scheduledAt = new Date(dueDateMs - relativeMinutes * 60 * 1000).toISOString();
+      } else if (rType === 'ABSOLUTE') {
+        const rawScheduled = r.scheduledAt || r.scheduled_at;
+        if (rawScheduled) {
+          scheduledAt = new Date(rawScheduled).toISOString();
+        }
+      }
+
+      if (!scheduledAt) return;
+
+      // Create reminder for ASSIGNEE and ASSIGNER (if different)
+      const targetUserIds = [task.assigned_to_id];
+      if (task.created_by_id && task.created_by_id !== task.assigned_to_id) {
+        targetUserIds.push(task.created_by_id);
+      }
+
+      targetUserIds.forEach((uid) => {
+        tasksStore.reminders.push({
+          id: `rem-${taskId}-${uid}-${idx}`,
+          task_id: taskId,
+          task_title: task.title,
+          user_id: uid,
+          type: rType,
+          relative_minutes_before: relativeMinutes,
+          scheduled_at: scheduledAt!,
+          remind_at: scheduledAt!,
+          is_sent: false,
+        });
+      });
+    });
+  }
+
+  // Every assigned task should also show up in the assignee's own To-Do list (both as a
+  // regular to-do and, once due/overdue, in the My Day "Suggestions" panel), not just on the
+  // Tasks page — this creates that linked to-do automatically at assignment time.
+  function createLinkedTodo(task: Task) {
+    try {
+      todosStore.createTodo(task.assigned_to_id, {
+        title: task.title,
+        due_date: task.due_date,
+        linked_task_id: task.id,
+      });
+    } catch (e) {
+      console.error('Failed to create linked to-do for task:', task.id, e);
+    }
+  }
+
+  // Recomputes progress up the parent chain, then auto-completes any PROJECT container task
+  // once every one of its per-employee subtasks has reached COMPLETED/CANCELLED (confirmed
+  // behavior: a Project should close itself out rather than needing a manual status change).
+  function propagateAndAutoComplete(startTaskId: string, allTasksArg: Task[], checklistArg: TaskChecklistItem[]) {
+    const updated = propagateProgressUpward(startTaskId, allTasksArg, checklistArg);
+    // propagateProgressUpward mutates progress_percent/progress_info in place but never
+    // persists them — without this, a periodic Mongo resync on another instance would revert
+    // a parent/Project's rolled-up progress back to stale data.
+    for (const id of updated.keys()) {
+      const t = tasksStore.tasks.get(id);
+      if (t) tasksStore.tasks.set(id, t);
+    }
+
+    let cur = tasksStore.tasks.get(startTaskId);
+    while (cur && cur.parent_task_id) {
+      const parent = tasksStore.tasks.get(cur.parent_task_id);
+      if (!parent) break;
+      if (
+        parent.task_type === 'PROJECT' &&
+        parent.status !== 'COMPLETED' &&
+        parent.status !== 'CANCELLED' &&
+        canMarkCompleted(parent, allTasksArg)
+      ) {
+        parent.status = 'COMPLETED';
+        parent.progress_percent = 100;
+        parent.completed_at = new Date().toISOString();
+        parent.updated_at = new Date().toISOString();
+        tasksStore.tasks.set(parent.id, parent);
+
+        tasksStore.activityLogs.unshift({
+          id: 'act-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+          task_id: parent.id,
+          task_title: parent.title,
+          user_id: 'SYSTEM',
+          user_name: 'SYSTEM',
+          action: 'PROJECT_AUTO_COMPLETED',
+          field_name: 'status',
+          new_value: 'COMPLETED',
+          created_at: new Date().toISOString(),
+        });
+
+        notifyUser(
+          parent.created_by_id,
+          'Project Completed',
+          `Every assignee has finished their part of "${parent.title}" — the project is now complete.`,
+          'STATUS_CHANGED',
+          parent.id
+        );
+      }
+      cur = parent;
+    }
+  }
+
   apiRouter.post('/tasks', (req, res, next) => {
     const {
       title,
       description,
       assigned_to_id,
+      assignee_ids,
+      task_type,
       priority,
       start_date,
       due_date,
@@ -391,47 +532,135 @@ export function createApp() {
       return next(AppError.badRequest('Task title is required'));
     }
 
-    const allUsers = Array.from(dbStore.users.values());
     const currentUser = req.fullUser || {
       id: req.user?.id || '',
       role: req.user?.role || 'EXECUTIVE',
       hierarchy_level: req.user?.hierarchy_level ?? 3,
     } as any;
 
-    const activeSubordinatesCount = allUsers.filter(
-      (u) => u.manager_id === currentUser.id && u.is_active
-    ).length;
+    // Org-wide rule: self, any peer at the same hierarchy level, or anyone at a lower level
+    // — in any department, not just the assigner's own reporting subtree (see canAssignTask).
+    const checkAssignable = (assignee: User): string | null => {
+      if (!canAssignTask(currentUser, assignee)) {
+        return `Cannot assign tasks to ${assignee.name} due to hierarchy rules`;
+      }
+      return null;
+    };
 
+    // SECURITY: Sanitize rich-text description before storing
+    const cleanDescription = sanitizeRichText(description || '');
+    const nowIso = new Date().toISOString();
+
+    // ---- PROJECT: one container task + one real subtask per selected employee ----
+    if (task_type === 'PROJECT') {
+      const ids: string[] = Array.isArray(assignee_ids) ? Array.from(new Set(assignee_ids)) : [];
+      if (ids.length === 0) {
+        return next(AppError.badRequest('Select at least one employee to assign the project to'));
+      }
+
+      const assignees: User[] = [];
+      for (const id of ids) {
+        const u = dbStore.users.get(id);
+        if (!u) {
+          return next(AppError.notFound(`Assignee user ${id} not found`));
+        }
+        const err = checkAssignable(u);
+        if (err) {
+          return next(AppError.forbidden(`${u.name}: ${err}`));
+        }
+        assignees.push(u);
+      }
+
+      const projectId = 'tsk-' + Date.now();
+      const projectTask: Task = {
+        id: projectId,
+        title: title.trim(),
+        description: cleanDescription,
+        task_type: 'PROJECT',
+        created_by_id: currentUser.id,
+        assigned_to_id: currentUser.id,
+        parent_task_id: null,
+        root_task_id: projectId,
+        depth: 0,
+        status: 'TODO',
+        priority: (priority || 'CRITICAL') as any,
+        start_date: start_date ? new Date(start_date).toISOString() : nowIso,
+        due_date: due_date ? new Date(due_date).toISOString() : null,
+        progress_percent: 0,
+        is_recurring: Boolean(is_recurring),
+        recurrence_pattern: is_recurring ? recurrence_pattern || 'DAILY' : null,
+        submission_count: 0,
+        last_submitted_at: null,
+        first_submitted_at: null,
+        is_overdue: false,
+        overdue_since: null,
+        completed_on_time: null,
+        is_deleted: false,
+        created_at: nowIso,
+        updated_at: nowIso,
+      } as Task;
+
+      tasksStore.tasks.set(projectId, projectTask);
+      calendarStore.syncTaskDeadlineEvent(projectTask);
+
+      assignees.forEach((assignee, idx) => {
+        const childId = `tsk-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+        const childTask: Task = {
+          ...projectTask,
+          id: childId,
+          task_type: 'TASK',
+          assigned_to_id: assignee.id,
+          parent_task_id: projectId,
+          root_task_id: projectId,
+          depth: 1,
+        };
+        tasksStore.tasks.set(childId, childTask);
+        calendarStore.syncTaskDeadlineEvent(childTask);
+        createReminders(childId, childTask, reminders);
+        createLinkedTodo(childTask);
+
+        if (assignee.id !== currentUser.id) {
+          notifyUser(
+            assignee.id,
+            'New Project Assigned',
+            `${currentUser.name || 'A manager'} assigned you to project: "${childTask.title}"`,
+            'TASK_ASSIGNED',
+            childId
+          );
+        }
+      });
+
+      const allTasksNow = Array.from(tasksStore.tasks.values()).filter((t) => !t.is_deleted);
+      const allChecklistNow = Array.from(tasksStore.checklistItems.values());
+      propagateAndAutoComplete(projectId, allTasksNow, allChecklistNow);
+
+      return res.status(201).json(sendSuccess(enrichTaskWithProgressAndChecklist(projectTask)));
+    }
+
+    // ---- Regular single-assignee TASK (unchanged behavior) ----
     const assignee = assigned_to_id ? dbStore.users.get(assigned_to_id) : currentUser;
     if (assigned_to_id && !assignee) {
       return next(AppError.notFound(`Assignee user ${assigned_to_id} not found`));
     }
-    if (assignee && assignee.id !== currentUser.id) {
-      const isPeerHead = isPeerDeptHeadAssignment(currentUser, assignee);
-      if (currentUser.role !== 'ADMIN' && !isPeerHead && activeSubordinatesCount === 0) {
-        return next(AppError.forbidden('User has zero subordinates and cannot assign tasks to others'));
-      }
-      if (!canAssignTask(currentUser, assignee, allUsers)) {
-        return next(AppError.forbidden(`Cannot assign tasks to ${assignee.name} due to hierarchy rules`));
-      }
+    if (assignee) {
+      const err = checkAssignable(assignee);
+      if (err) return next(AppError.forbidden(err));
     }
 
-    // SECURITY: Sanitize rich-text description before storing
-    const cleanDescription = sanitizeRichText(description || '');
-
     const taskId = 'tsk-' + Date.now();
-    const newTask = {
+    const newTask: Task = {
       id: taskId,
       title: title.trim(),
       description: cleanDescription,
+      task_type: 'TASK',
       created_by_id: currentUser.id,
       assigned_to_id: assignee ? assignee.id : currentUser.id,
       parent_task_id: null,
       root_task_id: taskId,
       depth: 0,
-      status: 'TODO' as const,
+      status: 'TODO',
       priority: (priority || 'CRITICAL') as any,
-      start_date: start_date ? new Date(start_date).toISOString() : new Date().toISOString(),
+      start_date: start_date ? new Date(start_date).toISOString() : nowIso,
       due_date: due_date ? new Date(due_date).toISOString() : null,
       progress_percent: 0,
       is_recurring: Boolean(is_recurring),
@@ -443,56 +672,14 @@ export function createApp() {
       overdue_since: null,
       completed_on_time: null,
       is_deleted: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+      created_at: nowIso,
+      updated_at: nowIso,
+    } as Task;
 
     tasksStore.tasks.set(taskId, newTask);
     calendarStore.syncTaskDeadlineEvent(newTask);
-
-    // Save reminders if provided
-    if (Array.isArray(reminders)) {
-      reminders.forEach((r: any, idx: number) => {
-        const rType = r.type || 'RELATIVE';
-        const relativeMinutes = Number(r.relativeMinutes ?? r.relative_minutes_before ?? 15);
-        let scheduledAt: string | null = null;
-
-        if (rType === 'RELATIVE') {
-          if (!newTask.due_date) {
-            return; // Skip relative reminder if task has no due_date
-          }
-          const dueDateMs = new Date(newTask.due_date).getTime();
-          scheduledAt = new Date(dueDateMs - relativeMinutes * 60 * 1000).toISOString();
-        } else if (rType === 'ABSOLUTE') {
-          const rawScheduled = r.scheduledAt || r.scheduled_at;
-          if (rawScheduled) {
-            scheduledAt = new Date(rawScheduled).toISOString();
-          }
-        }
-
-        if (!scheduledAt) return;
-
-        // Create reminder for ASSIGNEE and ASSIGNER (if different)
-        const targetUserIds = [newTask.assigned_to_id];
-        if (newTask.created_by_id && newTask.created_by_id !== newTask.assigned_to_id) {
-          targetUserIds.push(newTask.created_by_id);
-        }
-
-        targetUserIds.forEach((uid) => {
-          tasksStore.reminders.push({
-            id: `rem-${taskId}-${uid}-${idx}`,
-            task_id: taskId,
-            task_title: newTask.title,
-            user_id: uid,
-            type: rType,
-            relative_minutes_before: relativeMinutes,
-            scheduled_at: scheduledAt,
-            remind_at: scheduledAt,
-            is_sent: false,
-          });
-        });
-      });
-    }
+    createReminders(taskId, newTask, reminders);
+    createLinkedTodo(newTask);
 
     // Push real-time notification to assignee
     if (newTask.assigned_to_id !== currentUser.id) {
@@ -690,7 +877,7 @@ export function createApp() {
 
     // Recalculate & Propagate progress upward via root_task_id
     const checklistItems = Array.from(tasksStore.checklistItems.values());
-    propagateProgressUpward(task.id, allTasks, checklistItems);
+    propagateAndAutoComplete(task.id, allTasks, checklistItems);
 
     // f) Log update in activity feed
     const actorRole = getTaskActorRole(currentUser, task);
@@ -777,7 +964,7 @@ export function createApp() {
     // Recalculate task progress and propagate upward
     const allTasks = Array.from(tasksStore.tasks.values()).filter((t) => !t.is_deleted);
     const allChecklist = Array.from(tasksStore.checklistItems.values());
-    propagateProgressUpward(task.id, allTasks, allChecklist);
+    propagateAndAutoComplete(task.id, allTasks, allChecklist);
 
     const updatedTask = enrichTaskWithProgressAndChecklist(task);
 
@@ -822,7 +1009,7 @@ export function createApp() {
     if (task) {
       const allTasks = Array.from(tasksStore.tasks.values()).filter((t) => !t.is_deleted);
       const allChecklist = Array.from(tasksStore.checklistItems.values());
-      propagateProgressUpward(task.id, allTasks, allChecklist);
+      propagateAndAutoComplete(task.id, allTasks, allChecklist);
     }
 
     const updatedTask = task ? enrichTaskWithProgressAndChecklist(task) : null;
@@ -862,7 +1049,7 @@ export function createApp() {
     if (task) {
       const allTasks = Array.from(tasksStore.tasks.values()).filter((t) => !t.is_deleted);
       const allChecklist = Array.from(tasksStore.checklistItems.values());
-      propagateProgressUpward(task.id, allTasks, allChecklist);
+      propagateAndAutoComplete(task.id, allTasks, allChecklist);
     }
 
     const updatedTask = task ? enrichTaskWithProgressAndChecklist(task) : null;
@@ -906,7 +1093,7 @@ export function createApp() {
     if (task) {
       const allTasks = Array.from(tasksStore.tasks.values()).filter((t) => !t.is_deleted);
       const allChecklist = Array.from(tasksStore.checklistItems.values());
-      propagateProgressUpward(task.id, allTasks, allChecklist);
+      propagateAndAutoComplete(task.id, allTasks, allChecklist);
     }
 
     const updatedTask = task ? enrichTaskWithProgressAndChecklist(task) : null;
@@ -980,24 +1167,14 @@ export function createApp() {
       return next(AppError.forbidden('You do not have permission to delegate this task'));
     }
 
-    const activeSubordinatesCount = allUsers.filter(
-      (u) => u.manager_id === currentUser.id && u.is_active
-    ).length;
-
     const subordinate = dbStore.users.get(subordinate_id);
     if (!subordinate) {
       return next(AppError.notFound(`Subordinate user ${subordinate_id} not found`));
     }
 
-    if (
-      currentUser.role !== 'ADMIN' &&
-      activeSubordinatesCount === 0 &&
-      !isPeerDeptHeadAssignment(currentUser, subordinate)
-    ) {
-      return next(AppError.forbidden('User has zero subordinates and cannot delegate tasks'));
-    }
-
-    if (!canAssignTask(currentUser, subordinate, allUsers)) {
+    // Org-wide rule: self, any peer at the same hierarchy level, or anyone at a lower level
+    // — in any department, not just the assigner's own reporting subtree (see canAssignTask).
+    if (!canAssignTask(currentUser, subordinate)) {
       return next(AppError.forbidden(`Cannot delegate task to ${subordinate.name} due to hierarchy rules`));
     }
 
@@ -1034,7 +1211,7 @@ export function createApp() {
     // Recalculate & propagate progress upward since parentTask now has subtasks (Tier 3)
     const allTasks = Array.from(tasksStore.tasks.values()).filter((t) => !t.is_deleted);
     const allChecklist = Array.from(tasksStore.checklistItems.values());
-    propagateProgressUpward(newTaskId, allTasks, allChecklist);
+    propagateAndAutoComplete(newTaskId, allTasks, allChecklist);
 
     // Activity Log
     tasksStore.activityLogs.unshift({
@@ -1115,7 +1292,7 @@ export function createApp() {
     },
   ]);
 
-  apiRouter.get('/tasks/:id/comments', (req, res, next) => {
+  apiRouter.get('/tasks/:id/comments', async (req, res, next) => {
     const task = tasksStore.tasks.get(req.params.id);
     if (!task || task.is_deleted) {
       return next(AppError.notFound(`Task with ID ${req.params.id} not found`));
@@ -1130,11 +1307,14 @@ export function createApp() {
       return next(AppError.forbidden('You do not have permission to view this task comments'));
     }
 
-    const comments = taskCommentsStore.get(req.params.id) || [];
+    // Read straight from MongoDB: comments are low-volume per task, and a sibling warm
+    // instance may have persisted comments this instance's in-memory map never saw.
+    const fromMongo = await fetchCommentsForTaskFromMongo(req.params.id);
+    const comments = fromMongo ?? taskCommentsStore.get(req.params.id) ?? [];
     res.json(sendSuccess(comments.map(withCommentAttachments)));
   });
 
-  apiRouter.post('/tasks/:id/comments', (req, res, next) => {
+  apiRouter.post('/tasks/:id/comments', async (req, res, next) => {
     const task = tasksStore.tasks.get(req.params.id);
     if (!task || task.is_deleted) {
       return next(AppError.notFound(`Task with ID ${req.params.id} not found`));
@@ -1182,6 +1362,7 @@ export function createApp() {
     const existing = taskCommentsStore.get(req.params.id) || [];
     existing.push(newComment);
     taskCommentsStore.set(req.params.id, existing);
+    await persistComment(newComment);
 
     // Let the other side of the task know a reply came in
     new Set([task.created_by_id, task.assigned_to_id]).forEach((uid) => {
@@ -1718,24 +1899,32 @@ export function createApp() {
         }
       );
     }
+    // Scoped strictly to this logged-in user (plus broadcast 'ALL' notices) — an ADMIN
+    // viewer must not see every employee's personal notifications.
     const userNotifs = tasksStore.notifications.filter(
-      (n) => n.user_id === userId || n.user_id === 'ALL' || req.user?.role === 'ADMIN'
+      (n) => n.user_id === userId || n.user_id === 'ALL'
     );
     res.json(sendSuccess(userNotifs));
   });
-  apiRouter.patch('/notifications/read-all', (req, res) => {
+  apiRouter.patch('/notifications/read-all', async (req, res) => {
     const userId = req.user?.id || '';
+    const toPersist: NotificationItem[] = [];
     tasksStore.notifications.forEach((n) => {
-      if (n.user_id === userId || n.user_id === 'ALL' || req.user?.role === 'ADMIN') {
+      if (n.user_id === userId || n.user_id === 'ALL') {
+        if (!n.is_read) toPersist.push(n);
         n.is_read = true;
       }
     });
+    // Mutating in place doesn't persist (only .set()/push() trigger the write-through hook)
+    // — without this, a periodic Mongo resync reverts these back to unread.
+    await Promise.all(toPersist.map((n) => persistNotification(n)));
     res.json(sendSuccess({ message: 'All notifications marked as read' }));
   });
-  apiRouter.patch('/notifications/:id/read', (req, res) => {
+  apiRouter.patch('/notifications/:id/read', async (req, res) => {
     const notif = tasksStore.notifications.find((n) => n.id === req.params.id);
     if (notif) {
       notif.is_read = true;
+      await persistNotification(notif);
     }
     res.json(sendSuccess({ id: req.params.id, is_read: true }));
   });

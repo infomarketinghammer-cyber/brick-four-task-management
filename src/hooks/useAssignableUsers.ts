@@ -3,46 +3,32 @@ import { apiClient } from '../api/client';
 import { useAuthStore } from '../store/authStore';
 import { User } from '../types';
 
-interface SubordinatesResponse {
-  managerId: string;
+interface AssignableResponse {
+  userId: string;
   totalCount: number;
-  subordinates: User[];
+  assignable: User[];
 }
 
 /**
- * Users the current user may assign/delegate to:
- * - their reporting subtree, and
- * - for department heads, every other department head (cross-department requests).
+ * Users the current user may assign/delegate to, org-wide: any peer at their own hierarchy
+ * level (any department) plus anyone at a lower level (any department) — not limited to
+ * their own reporting subtree. Mirrors canAssignTask in src/permissions.ts.
  */
 export function useAssignableUsers(enabled: boolean) {
   const currentUser = useAuthStore((state) => state.user);
-  const isDeptHead = currentUser?.role === 'DEPT_HEAD';
 
-  const { data: subData, isLoading: isLoadingSubordinates } = useQuery<SubordinatesResponse>({
-    queryKey: ['subordinates', currentUser?.id],
+  const { data, isLoading } = useQuery<AssignableResponse>({
+    queryKey: ['assignable-users', currentUser?.id],
     queryFn: async () => {
-      if (!currentUser?.id) return { managerId: '', totalCount: 0, subordinates: [] };
-      const res: any = await apiClient.get(`/users/${currentUser.id}/subordinates`);
-      return res.data || { managerId: currentUser.id, totalCount: 0, subordinates: [] };
+      if (!currentUser?.id) return { userId: '', totalCount: 0, assignable: [] };
+      const res: any = await apiClient.get(`/users/${currentUser.id}/assignable`);
+      return res.data || { userId: currentUser.id, totalCount: 0, assignable: [] };
     },
     enabled: !!currentUser?.id && enabled,
   });
 
-  const { data: headsData, isLoading: isLoadingHeads } = useQuery<User[]>({
-    queryKey: ['peer-dept-heads'],
-    queryFn: async () => {
-      const res: any = await apiClient.get('/users?scope=all&role=DEPT_HEAD');
-      return res.data?.users || [];
-    },
-    enabled: isDeptHead && enabled,
-  });
-
-  const subordinates = Array.isArray(subData?.subordinates) ? subData!.subordinates : [];
-  const peerHeads = isDeptHead ? (headsData || []).filter((u) => u.id !== currentUser?.id && u.is_active !== false) : [];
-
   return {
-    subordinates,
-    peerHeads,
-    isLoading: isLoadingSubordinates || (isDeptHead && isLoadingHeads),
+    assignableUsers: Array.isArray(data?.assignable) ? data!.assignable : [],
+    isLoading,
   };
 }

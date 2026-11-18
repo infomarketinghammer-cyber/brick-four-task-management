@@ -33,6 +33,10 @@ export function runOverdueSweep() {
         task.overdue_since = new Date(task.due_date).toISOString();
         task.status = 'OVERDUE';
         task.updated_at = now.toISOString();
+        // Mutating the object in place doesn't persist it (only .set() triggers the
+        // write-through hook) — without this, the periodic Mongo resync overwrites
+        // is_overdue back to false and this sweep re-fires the same notification forever.
+        tasksStore.tasks.set(task.id, task);
 
         // Write ActivityLog entry with actor 'SYSTEM'
         tasksStore.activityLogs.unshift({
@@ -149,6 +153,22 @@ export function runReminderDispatch() {
   } catch (err) {
     console.error('[cron] Reminder dispatch error:', err);
   }
+}
+
+let lastJobRunAt = Date.now();
+
+/**
+ * On Vercel the app runs as a serverless function, so `initializeCronJobs`'s node-cron
+ * schedules (which need a persistent process) never fire in production — overdue sweeps
+ * and reminder dispatch would silently never run. Called from a request-path middleware
+ * instead, time-gated so it only actually does the work every `thresholdMs`.
+ */
+export function runScheduledJobsIfDue(thresholdMs = 5 * 60 * 1000) {
+  const now = Date.now();
+  if (now - lastJobRunAt < thresholdMs) return;
+  lastJobRunAt = now;
+  runOverdueSweep();
+  runReminderDispatch();
 }
 
 /**

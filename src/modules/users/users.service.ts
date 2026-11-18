@@ -484,6 +484,33 @@ export class UsersService {
   }
 
   /**
+   * Users a given user may assign/delegate tasks to, org-wide: any peer at their own
+   * hierarchy level (any department) plus anyone at a lower level (any department) — not
+   * limited to their own reporting subtree. Mirrors canAssignTask in src/permissions.ts.
+   */
+  static async getAssignableUsers(targetUserId: string) {
+    const targetUser = dbStore.users.get(targetUserId);
+    if (!targetUser) {
+      throw AppError.notFound(`User with ID '${targetUserId}' not found`);
+    }
+
+    const assignable = Array.from(dbStore.users.values())
+      .filter(
+        (u) =>
+          u.id !== targetUserId &&
+          u.is_active &&
+          (targetUser.role === 'ADMIN' || targetUser.hierarchy_level === 0 || u.hierarchy_level >= targetUser.hierarchy_level)
+      )
+      .map(({ password_hash, ...rest }) => rest);
+
+    return {
+      userId: targetUserId,
+      totalCount: assignable.length,
+      assignable,
+    };
+  }
+
+  /**
    * Admin-only: Reassigns reporting line for a user while preventing circular reporting loops.
    */
   static async updateManager(userId: string, input: UpdateManagerInput) {

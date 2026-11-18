@@ -106,6 +106,16 @@ export class UsersController {
     }
   }
 
+  static async getAssignableUsers(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.params.id;
+      const result = await UsersService.getAssignableUsers(userId);
+      res.json(sendSuccess(result));
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async updateManager(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = req.params.id;

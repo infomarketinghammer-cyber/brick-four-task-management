@@ -35,6 +35,7 @@ export let inviteesCol: Collection<EventInviteeRecord> | null = null;
 export let conversationsCol: Collection<any> | null = null;
 export let messagesCol: Collection<any> | null = null;
 export let refreshTokensCol: Collection<RefreshTokenRecord> | null = null;
+export let commentsCol: Collection<any> | null = null;
 
 export function getMongoDb(): Db | null {
   return db;
@@ -79,6 +80,7 @@ export async function initMongoDB(): Promise<void> {
     conversationsCol = db.collection<any>('conversations');
     messagesCol = db.collection<any>('messages');
     refreshTokensCol = db.collection<RefreshTokenRecord>('refresh_tokens');
+    commentsCol = db.collection<any>('task_comments');
 
     // Create Indexes for high performance
     await createCollectionIndexes();
@@ -138,8 +140,125 @@ async function createCollectionIndexes() {
     await messagesCol?.createIndex({ conversationId: 1, created_at: 1 });
 
     await refreshTokensCol?.createIndex({ token: 1 }, { unique: true });
+
+    await commentsCol?.createIndex({ id: 1 }, { unique: true });
+    await commentsCol?.createIndex({ task_id: 1 });
   } catch (err) {
     console.warn('[MongoDB] Index creation notice:', err);
+  }
+}
+
+/**
+ * Loads tasks/checklist/activity/notifications/todos/calendar from MongoDB into the
+ * in-memory stores. Used both at cold start and periodically (see resyncIfStale below) to
+ * pull in data written by OTHER warm serverless instances — each Vercel lambda instance
+ * hydrates its own in-memory copy once at cold start and otherwise never sees writes made
+ * by a sibling instance, which is what caused tasks/notifications/calendar events created
+ * on one instance to be invisible on requests routed to another.
+ *
+ * Uses the base Map/Array methods (bypassing the PersistedMap/PersistedArray write-through
+ * hooks) since this data was just read from Mongo and re-persisting it would be a redundant
+ * write; the array instances are mutated in place (not reassigned) so their persistence
+ * hooks stay intact for later live writes from this same instance.
+ */
+async function loadVolatileCollectionsFromMongo() {
+  // TASKS
+  if (tasksCol) {
+    const taskCount = await tasksCol.countDocuments();
+    if (taskCount > 0) {
+      const mongoTasks = await tasksCol.find({}).toArray();
+      for (const t of mongoTasks) {
+        const { _id, ...cleanTask } = t as any;
+        Map.prototype.set.call(tasksStore.tasks, cleanTask.id, cleanTask);
+      }
+    }
+  }
+
+  // CHECKLIST ITEMS
+  if (checklistCol) {
+    const count = await checklistCol.countDocuments();
+    if (count > 0) {
+      const items = await checklistCol.find({}).toArray();
+      for (const item of items) {
+        const { _id, ...cleanItem } = item as any;
+        Map.prototype.set.call(tasksStore.checklistItems, cleanItem.id, cleanItem);
+      }
+    }
+  }
+
+  // ACTIVITY LOGS
+  if (activityLogsCol) {
+    const count = await activityLogsCol.countDocuments();
+    if (count > 0) {
+      const logs = await activityLogsCol.find({}).sort({ created_at: -1 }).limit(500).toArray();
+      const clean = logs.map((l: any) => {
+        const { _id, ...rest } = l;
+        return rest;
+      });
+      tasksStore.activityLogs.length = 0;
+      Array.prototype.push.apply(tasksStore.activityLogs, clean);
+    }
+  }
+
+  // NOTIFICATIONS
+  if (notificationsCol) {
+    const count = await notificationsCol.countDocuments();
+    if (count > 0) {
+      const notifs = await notificationsCol.find({}).sort({ created_at: -1 }).limit(200).toArray();
+      const clean = notifs.map((n: any) => {
+        const { _id, ...rest } = n;
+        return rest;
+      });
+      tasksStore.notifications.length = 0;
+      Array.prototype.push.apply(tasksStore.notifications, clean);
+    }
+  }
+
+  // TODOS
+  if (todosCol) {
+    const count = await todosCol.countDocuments();
+    if (count > 0) {
+      const todos = await todosCol.find({}).toArray();
+      for (const todo of todos) {
+        const { _id, ...clean } = todo as any;
+        todosStore.todos.set(clean.id, clean);
+      }
+    }
+  }
+
+  // TODO LISTS & STEPS
+  if (todoListsCol) {
+    const lists = await todoListsCol.find({}).toArray();
+    for (const l of lists) {
+      const { _id, ...clean } = l as any;
+      todosStore.todoLists.set(clean.id, clean);
+    }
+  }
+  if (todoStepsCol) {
+    const steps = await todoStepsCol.find({}).toArray();
+    for (const s of steps) {
+      const { _id, ...clean } = s as any;
+      todosStore.todoSteps.set(clean.id, clean);
+    }
+  }
+
+  // CALENDAR EVENTS & INVITEES
+  if (eventsCol) {
+    const count = await eventsCol.countDocuments();
+    if (count > 0) {
+      const evts = await eventsCol.find({}).toArray();
+      for (const evt of evts) {
+        const { _id, ...clean } = evt as any;
+        calendarStore.events.set(clean.id, clean);
+      }
+    }
+  }
+  if (inviteesCol) {
+    const invs = await inviteesCol.find({}).toArray();
+    for (const inv of invs) {
+      const { _id, ...clean } = inv as any;
+      calendarStore.invitees.set(clean.id, clean);
+    }
   }
 }
 
@@ -150,7 +269,7 @@ async function syncInitialData() {
   if (!isConnected || !usersCol) return;
 
   try {
-    // 1. USERS COLLECTION
+    // USERS COLLECTION
     const userCount = await usersCol.countDocuments();
     if (userCount === 0) {
       console.log(`[MongoDB] Seeding 27 BrickFour employee records to collection 'users'...`);
@@ -168,103 +287,32 @@ async function syncInitialData() {
       }
     }
 
-    // 2. TASKS COLLECTION
-    if (tasksCol) {
-      const taskCount = await tasksCol.countDocuments();
-      if (taskCount > 0) {
-        const mongoTasks = await tasksCol.find({}).toArray();
-        for (const t of mongoTasks) {
-          const { _id, ...cleanTask } = t as any;
-          tasksStore.tasks.set(cleanTask.id, cleanTask);
-        }
-        console.log(`[MongoDB] Loaded ${taskCount} tasks from MongoDB.`);
-      }
-    }
-
-    // 3. CHECKLIST ITEMS
-    if (checklistCol) {
-      const count = await checklistCol.countDocuments();
-      if (count > 0) {
-        const items = await checklistCol.find({}).toArray();
-        for (const item of items) {
-          const { _id, ...cleanItem } = item as any;
-          tasksStore.checklistItems.set(cleanItem.id, cleanItem);
-        }
-      }
-    }
-
-    // 4. ACTIVITY LOGS
-    if (activityLogsCol) {
-      const count = await activityLogsCol.countDocuments();
-      if (count > 0) {
-        const logs = await activityLogsCol.find({}).sort({ created_at: -1 }).limit(500).toArray();
-        tasksStore.activityLogs = logs.map((l: any) => {
-          const { _id, ...clean } = l;
-          return clean;
-        });
-      }
-    }
-
-    // 5. NOTIFICATIONS
-    if (notificationsCol) {
-      const count = await notificationsCol.countDocuments();
-      if (count > 0) {
-        const notifs = await notificationsCol.find({}).sort({ created_at: -1 }).limit(200).toArray();
-        tasksStore.notifications = notifs.map((n: any) => {
-          const { _id, ...clean } = n;
-          return clean;
-        });
-      }
-    }
-
-    // 6. TODOS
-    if (todosCol) {
-      const count = await todosCol.countDocuments();
-      if (count > 0) {
-        const todos = await todosCol.find({}).toArray();
-        for (const todo of todos) {
-          const { _id, ...clean } = todo as any;
-          todosStore.todos.set(clean.id, clean);
-        }
-      }
-    }
-
-    // 7. TODO LISTS & STEPS
-    if (todoListsCol) {
-      const lists = await todoListsCol.find({}).toArray();
-      for (const l of lists) {
-        const { _id, ...clean } = l as any;
-        todosStore.todoLists.set(clean.id, clean);
-      }
-    }
-    if (todoStepsCol) {
-      const steps = await todoStepsCol.find({}).toArray();
-      for (const s of steps) {
-        const { _id, ...clean } = s as any;
-        todosStore.todoSteps.set(clean.id, clean);
-      }
-    }
-
-    // 8. CALENDAR EVENTS & INVITEES
-    if (eventsCol) {
-      const count = await eventsCol.countDocuments();
-      if (count > 0) {
-        const evts = await eventsCol.find({}).toArray();
-        for (const evt of evts) {
-          const { _id, ...clean } = evt as any;
-          calendarStore.events.set(clean.id, clean);
-        }
-      }
-    }
-    if (inviteesCol) {
-      const invs = await inviteesCol.find({}).toArray();
-      for (const inv of invs) {
-        const { _id, ...clean } = inv as any;
-        calendarStore.invitees.set(clean.id, clean);
-      }
+    await loadVolatileCollectionsFromMongo();
+    if (tasksStore.tasks.size > 0) {
+      console.log(`[MongoDB] Loaded ${tasksStore.tasks.size} tasks from MongoDB.`);
     }
   } catch (err) {
     console.error('[MongoDB] Error during initial data sync:', err);
+  }
+}
+
+let lastResyncAt = Date.now();
+
+/**
+ * Re-pulls the volatile collections (tasks, notifications, activity, calendar, todos) from
+ * MongoDB if it's been more than `thresholdMs` since the last resync on this warm instance.
+ * Cheap no-op on most requests; call at the top of any read path whose data can be created
+ * by a request that lands on a different instance (see loadVolatileCollectionsFromMongo).
+ */
+export async function resyncIfStale(thresholdMs = 8000): Promise<void> {
+  if (!isConnected) return;
+  const now = Date.now();
+  if (now - lastResyncAt < thresholdMs) return;
+  lastResyncAt = now;
+  try {
+    await loadVolatileCollectionsFromMongo();
+  } catch (err) {
+    console.error('[MongoDB] Error during periodic resync:', err);
   }
 }
 
@@ -305,6 +353,49 @@ export async function persistDeleteTask(taskId: string): Promise<void> {
     await tasksCol.updateOne({ id: taskId }, { $set: { is_deleted: true, updated_at: new Date().toISOString() } });
   } catch (err) {
     console.error('[MongoDB] Failed to soft-delete task:', err);
+  }
+}
+
+// On Vercel, concurrent requests can land on separate warm serverless instances whose
+// in-memory tasksStore was hydrated at a different (earlier) cold start, so a task created
+// on one instance can briefly 404 on another. Used to self-heal that in-memory cache on a miss.
+export async function fetchTaskByIdFromMongo(taskId: string): Promise<Task | null> {
+  if (!isConnected || !tasksCol) return null;
+  try {
+    const doc = await tasksCol.findOne({ id: taskId });
+    if (!doc) return null;
+    const { _id, ...task } = doc as any;
+    return task as Task;
+  } catch (err) {
+    console.error('[MongoDB] Failed to fetch task by id:', err);
+    return null;
+  }
+}
+
+// Task comments previously lived only in an in-memory Map inside server.ts with zero
+// MongoDB backing, so every comment was lost on a cold start and never visible to a
+// sibling serverless instance. Read-through directly from Mongo (small per-task volume,
+// no caching needed) instead of trusting any in-memory copy.
+export async function persistComment(comment: any): Promise<void> {
+  if (!isConnected || !commentsCol) return;
+  try {
+    await commentsCol.updateOne({ id: comment.id }, { $set: comment }, { upsert: true });
+  } catch (err) {
+    console.error('[MongoDB] Failed to persist comment:', err);
+  }
+}
+
+export async function fetchCommentsForTaskFromMongo(taskId: string): Promise<any[] | null> {
+  if (!isConnected || !commentsCol) return null;
+  try {
+    const docs = await commentsCol.find({ task_id: taskId }).sort({ created_at: 1 }).toArray();
+    return docs.map((d: any) => {
+      const { _id, ...rest } = d;
+      return rest;
+    });
+  } catch (err) {
+    console.error('[MongoDB] Failed to fetch comments for task:', err);
+    return null;
   }
 }
 

@@ -17,6 +17,7 @@ router.get('/me/capabilities', UsersController.getCapabilities);
 router.get('/', UsersController.getUsers);
 router.get('/org-chart', UsersController.getOrgChart);
 router.get('/:id/subordinates', UsersController.getSubordinates);
+router.get('/:id/assignable', UsersController.getAssignableUsers);
 router.get('/:id', UsersController.getUserById);
 
 // Admin-gated user management

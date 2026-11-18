@@ -65,29 +65,19 @@ export function getAncestorIds(userId: string, users: User[]): string[] {
 }
 
 /**
- * True when both users are department heads (peer heads may assign work to each other).
- */
-export function isPeerDeptHeadAssignment(assigner: User, assignee: User): boolean {
-  return (
-    assigner.id !== assignee.id &&
-    assigner.role === 'DEPT_HEAD' &&
-    assignee.role === 'DEPT_HEAD' &&
-    assignee.is_active !== false
-  );
-}
-
-/**
  * Determines if an assigner can assign or delegate a task to an assignee.
  *
- * Rule:
+ * Rule (org-wide, not limited to the assigner's own reporting subtree):
  * - ADMIN can assign tasks to anyone.
- * - A DEPT_HEAD can assign tasks to another DEPT_HEAD (cross-department requests).
- * - Otherwise, assigner.hierarchy_level < assignee.hierarchy_level AND assignee must be
- *   in the assigner's descendant subtree.
+ * - Anyone can assign to a peer at their OWN hierarchy level, in any department
+ *   (e.g. a level-2 employee can assign to any other level-2 employee).
+ * - Anyone can assign to anyone at a LOWER hierarchy level (higher level number = more
+ *   junior), in any department — not just their own descendant subtree.
+ * - An assigner cannot hand work upward to someone with more authority than them.
  *
  * @param assigner User creating or delegating the task
  * @param assignee Target assigned user
- * @param allUsers Full list of system users (required for non-admin subtree check)
+ * @param allUsers Unused — kept for call-site compatibility.
  */
 export function canAssignTask(
   assigner: User,
@@ -104,24 +94,12 @@ export function canAssignTask(
     return true;
   }
 
-  // Department heads can hand work to peer department heads, who then delegate within their team
-  if (isPeerDeptHeadAssignment(assigner, assignee)) {
-    return true;
-  }
-
-  // An upper manager can assign tasks downwards to employees in their subordinate reporting tree
-  // Assigner must have higher authority (lower hierarchy level number)
-  if (assigner.hierarchy_level >= assignee.hierarchy_level) {
+  if (assignee.is_active === false) {
     return false;
   }
 
-  // Assignee must be in assigner's descendant subordinate chain
-  if (allUsers.length > 0) {
-    const subordinateIds = getSubordinateIds(assigner.id, allUsers);
-    return subordinateIds.includes(assignee.id);
-  }
-
-  return false;
+  // Same level (any department) or strictly lower level (any department) — org-wide.
+  return assigner.hierarchy_level <= assignee.hierarchy_level;
 }
 
 /**
