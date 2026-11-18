@@ -6,6 +6,7 @@ import {
   persistDeleteChecklistItem,
   persistActivityLog,
   persistNotification,
+  persistReminder,
   fetchTaskByIdFromMongo,
 } from './mongodb';
 
@@ -115,7 +116,7 @@ class TasksStore {
   public activityLogs: ActivityLogItem[] = new PersistedArray<ActivityLogItem>((log) =>
     persistActivityLog(log)
   );
-  public reminders: ReminderItem[] = [];
+  public reminders: ReminderItem[] = new PersistedArray<ReminderItem>((r) => persistReminder(r));
   public notifications: NotificationItem[] = new PersistedArray<NotificationItem>((notif) =>
     persistNotification(notif)
   );
@@ -131,7 +132,7 @@ class TasksStore {
   private seedInitialTasks() {
     this.tasks.clear();
     this.activityLogs = new PersistedArray<ActivityLogItem>((log) => persistActivityLog(log));
-    this.reminders = [];
+    this.reminders = new PersistedArray<ReminderItem>((r) => persistReminder(r));
     this.notifications = new PersistedArray<NotificationItem>((notif) => persistNotification(notif));
     this.checklistItems.clear();
   }

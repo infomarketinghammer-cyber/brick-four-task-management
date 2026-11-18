@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -29,6 +29,7 @@ import { Role } from '../types';
 import { useCapabilities } from '../hooks/useCapabilities';
 import { DarodeJogLogo } from '../components/DarodeJogLogo';
 import { AdminAssistant } from '../components/AdminAssistant';
+import { playNotificationSound } from '../utils/notificationSound';
 
 export function AppLayout() {
   const queryClient = useQueryClient();
@@ -55,6 +56,21 @@ export function AppLayout() {
     },
     refetchInterval: 3000,
   });
+
+  // Chime whenever an unread notification shows up that wasn't there on the previous
+  // poll/socket refresh — skipped on the first load so existing unread items on login
+  // don't all sound off at once.
+  const seenNotifIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const currentIds = new Set(notificationsData.map((n: any) => n.id));
+    if (seenNotifIdsRef.current) {
+      const hasNewUnread = notificationsData.some(
+        (n: any) => !n.is_read && !seenNotifIdsRef.current!.has(n.id)
+      );
+      if (hasNewUnread) playNotificationSound();
+    }
+    seenNotifIdsRef.current = currentIds;
+  }, [notificationsData]);
 
   // Conversations Query (Real-time polling)
   const { data: conversationsData = [] } = useQuery({
@@ -173,7 +189,7 @@ export function AppLayout() {
         )}
 
         {/* Navigation Items */}
-        <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 py-4 px-3 space-y-1">
           {filteredNavItems.map((item) => {
             const isActive = location.pathname === item.path;
             const Icon = item.icon;
@@ -340,13 +356,22 @@ export function AppLayout() {
                     </button>
                   </div>
                   <div className="space-y-1 max-h-64 overflow-y-auto">
-                    {conversationsData && conversationsData.length > 0 ? (
-                      conversationsData.map((c: any) => (
+                    {(() => {
+                      // Same logic as the notifications panel: only ever show what's actually
+                      // new/unread here, not every old conversation — opening one marks it
+                      // read server-side, so it drops out of this list on the next refresh.
+                      const unreadConversations = Array.isArray(conversationsData)
+                        ? conversationsData.filter((c: any) => c.unreadCount > 0)
+                        : [];
+                      if (unreadConversations.length === 0) {
+                        return <p className="text-xs text-slate-500 text-center py-4">No new messages</p>;
+                      }
+                      return unreadConversations.map((c: any) => (
                         <div
                           key={c.id}
                           onClick={() => {
                             setMsgOpen(false);
-                            navigate('/messages');
+                            navigate(`/messages?c=${c.id}`);
                           }}
                           className="p-2.5 rounded-xl hover:bg-slate-50 cursor-pointer transition-colors flex items-start gap-3"
                         >
@@ -356,17 +381,13 @@ export function AppLayout() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between">
                               <p className="text-xs font-semibold text-slate-900">{c.participant?.name}</p>
-                              {c.unreadCount > 0 && (
-                                <span className="w-2 h-2 bg-indigo-600 rounded-full" />
-                              )}
+                              <span className="w-2 h-2 bg-indigo-600 rounded-full" />
                             </div>
                             <p className="text-[11px] text-slate-500 truncate">{c.lastMessage?.text || 'No messages'}</p>
                           </div>
                         </div>
-                      ))
-                    ) : (
-                      <p className="text-xs text-slate-500 text-center py-4">No recent conversations</p>
-                    )}
+                      ));
+                    })()}
                   </div>
                 </div>
               )}

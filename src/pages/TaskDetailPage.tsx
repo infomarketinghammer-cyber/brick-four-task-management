@@ -28,6 +28,7 @@ import {
   RotateCcw,
   AlertCircle,
   X,
+  Bell,
 } from 'lucide-react';
 
 import { apiClient } from '../api/client';
@@ -121,10 +122,14 @@ export function TaskDetailPage() {
   const [commentFiles, setCommentFiles] = useState<File[]>([]);
   const [requestChangesFiles, setRequestChangesFiles] = useState<File[]>([]);
   const [isDelegateModalOpen, setIsDelegateModalOpen] = useState(false);
+  const [isReminderModalOpen, setIsReminderModalOpen] = useState(false);
+  const [reminderMinutesBefore, setReminderMinutesBefore] = useState(30);
 
   // Edit description state
   const [isEditingDesc, setIsEditingDesc] = useState(false);
   const [editedDescription, setEditedDescription] = useState('');
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editedTitle, setEditedTitle] = useState('');
 
   // Attachment upload state & preview state
   const [isUploading, setIsUploading] = useState(false);
@@ -292,6 +297,29 @@ export function TaskDetailPage() {
       }
       queryClient.invalidateQueries({ queryKey: ['task-comments', id] });
       queryClient.invalidateQueries({ queryKey: ['task-activity', id] });
+    },
+  });
+
+  // Set a reminder for this task — fires a notification to BOTH the assignee and the
+  // assigner, whichever of them set it.
+  const setReminderMutation = useMutation({
+    mutationFn: async (relativeMinutes: number) => {
+      const res: any = await apiClient.post(`/tasks/${id}/reminders`, {
+        type: 'RELATIVE',
+        relativeMinutes,
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      showToast({ type: 'success', message: 'Reminder set — it will notify the assignee and assigner.' });
+      queryClient.invalidateQueries({ queryKey: ['reminders'] });
+      setIsReminderModalOpen(false);
+    },
+    onError: (err: any) => {
+      showToast({
+        type: 'error',
+        message: err?.response?.data?.error?.message || 'Failed to set reminder',
+      });
     },
   });
 
@@ -490,20 +518,77 @@ export function TaskDetailPage() {
                   </span>
                 )
               )}
-            </div>
-            <h1 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
-              {task.task_type === 'PROJECT' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase bg-purple-100 text-purple-700 rounded shrink-0">
-                  <Layers size={11} /> Project
+              {task.status !== 'COMPLETED' && task.submitted_late && (
+                <span className="px-2 py-0.5 bg-red-100 text-red-700 border border-red-200 font-bold text-[10px] rounded-md flex items-center gap-1">
+                  <AlertTriangle size={10} className="text-red-600" /> Submitted Late
                 </span>
               )}
-              <span>{task.title}</span>
-            </h1>
+            </div>
+            {isEditingTitle ? (
+              <div className="flex items-center gap-2 mt-0.5">
+                <input
+                  autoFocus
+                  type="text"
+                  value={editedTitle}
+                  onChange={(e) => setEditedTitle(e.target.value)}
+                  className="text-lg font-bold text-slate-900 tracking-tight bg-slate-50 border border-indigo-300 rounded-lg px-2 py-0.5 focus:outline-none focus:border-indigo-500 w-full max-w-md"
+                />
+                <button
+                  onClick={() => {
+                    if (editedTitle.trim()) {
+                      updateTaskMutation.mutate({ title: editedTitle.trim() });
+                    }
+                    setIsEditingTitle(false);
+                  }}
+                  className="p-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+                  title="Save title"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  onClick={() => setIsEditingTitle(false)}
+                  className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  title="Cancel"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <h1 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2 group">
+                {task.task_type === 'PROJECT' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase bg-purple-100 text-purple-700 rounded shrink-0">
+                    <Layers size={11} /> Project
+                  </span>
+                )}
+                <span>{task.title}</span>
+                {currentUser && getTaskActorRole(currentUser, task) === 'ASSIGNER' && (
+                  <button
+                    onClick={() => {
+                      setEditedTitle(task.title);
+                      setIsEditingTitle(true);
+                    }}
+                    className="text-slate-300 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Edit title"
+                  >
+                    <Edit3 size={14} />
+                  </button>
+                )}
+              </h1>
+            )}
           </div>
         </div>
 
         {/* Action button */}
         <div className="flex items-center gap-2">
+          {currentUser && getTaskActorRole(currentUser, task) !== 'OTHER' && (
+            <button
+              onClick={() => setIsReminderModalOpen(true)}
+              className="px-4 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-all"
+            >
+              <Bell size={16} />
+              <span>Set Reminder</span>
+            </button>
+          )}
           {!is_leaf_node && (
             <button
               onClick={() => setIsDelegateModalOpen(true)}
@@ -658,7 +743,7 @@ export function TaskDetailPage() {
                 <FileText size={16} className="text-indigo-600" />
                 Task Description & Instructions
               </span>
-              {currentUser && getTaskActorRole(currentUser, task) !== 'OTHER' && (
+              {currentUser && getTaskActorRole(currentUser, task) === 'ASSIGNER' && (
               <button
                 onClick={() => {
                   if (isEditingDesc) {
@@ -854,9 +939,16 @@ export function TaskDetailPage() {
                     )}
                   </div>
                 </div>
-                <span className="px-2.5 py-1 bg-amber-100 text-amber-800 text-[11px] font-bold rounded-full border border-amber-200">
-                  Awaiting Review
-                </span>
+                <div className="flex items-center gap-2">
+                  {task.submitted_late && (
+                    <span className="px-2.5 py-1 bg-red-100 text-red-700 text-[11px] font-bold rounded-full border border-red-200">
+                      Submitted Late
+                    </span>
+                  )}
+                  <span className="px-2.5 py-1 bg-amber-100 text-amber-800 text-[11px] font-bold rounded-full border border-amber-200">
+                    Awaiting Review
+                  </span>
+                </div>
               </div>
 
               {/* Current Round Deliverable Files */}
@@ -1188,14 +1280,15 @@ export function TaskDetailPage() {
                         <span>Start Work</span>
                       </button>
                     )}
-                    {task.status === 'IN_PROGRESS' && allowedNext.includes('SUBMITTED') && (
+                    {(task.status === 'IN_PROGRESS' || task.status === 'OVERDUE') &&
+                      allowedNext.includes('SUBMITTED') && (
                       <button
                         onClick={handleSubmitForReviewClick}
                         disabled={updateTaskMutation.isPending}
                         className="w-full py-2.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-xs"
                       >
                         <CheckCircle2 size={15} />
-                        <span>Submit for Review</span>
+                        <span>{task.status === 'OVERDUE' ? 'Submit Late' : 'Submit for Review'}</span>
                       </button>
                     )}
                     {task.status === 'SUBMITTED' && allowedNext.includes('IN_PROGRESS') && (
@@ -1775,6 +1868,70 @@ export function TaskDetailPage() {
           onClose={() => setIsDelegateModalOpen(false)}
           parentTask={task}
         />
+      )}
+
+      {/* Set Reminder Modal */}
+      {isReminderModalOpen && task && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full border border-slate-200 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-xl bg-amber-100 text-amber-600">
+                  <Bell size={18} />
+                </span>
+                <h2 className="text-sm font-bold text-slate-900">Set Reminder</h2>
+              </div>
+              <button
+                onClick={() => setIsReminderModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-500">
+                Both the assignee and the assigner will get a notification when the reminder fires.
+              </p>
+              {!task.due_date ? (
+                <p className="text-xs text-red-600 font-medium">
+                  This task has no due date, so a reminder can&apos;t be scheduled relative to it.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700">Remind me before the due date</label>
+                  <select
+                    value={reminderMinutesBefore}
+                    onChange={(e) => setReminderMinutesBefore(Number(e.target.value))}
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value={15}>15 minutes before</option>
+                    <option value={30}>30 minutes before</option>
+                    <option value={60}>1 hour before</option>
+                    <option value={180}>3 hours before</option>
+                    <option value={1440}>1 day before</option>
+                  </select>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-3.5 bg-slate-50 border-t border-slate-100 rounded-b-3xl">
+              <button
+                type="button"
+                onClick={() => setIsReminderModalOpen(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!task.due_date || setReminderMutation.isPending}
+                onClick={() => setReminderMutation.mutate(reminderMinutesBefore)}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold disabled:opacity-50"
+              >
+                {setReminderMutation.isPending ? 'Setting...' : 'Set Reminder'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

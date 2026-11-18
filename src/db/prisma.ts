@@ -332,7 +332,7 @@ class InMemoryDatabase {
       {
         id: 'usr-omkar-016',
         name: 'Omkar Sawant',
-        email: 'omkarsawant36@gmail.com',
+        email: 'omkar.sawant@brickfour.com',
         phone: '9607688585',
         employee_no: 'BRKF016',
         designation: 'Sale and Marketing Executive',

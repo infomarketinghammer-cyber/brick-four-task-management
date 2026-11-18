@@ -52,7 +52,9 @@ const ASSIGNEE_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   COMPLETED: [],
   REOPENED: [],
   CANCELLED: [],
-  OVERDUE: [],
+  // Going overdue must not block the assignee from still submitting — it just gets flagged
+  // as a late submission (see `submitted_late` set in server.ts) instead of being blocked.
+  OVERDUE: ['SUBMITTED'],
 };
 
 const ASSIGNER_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {

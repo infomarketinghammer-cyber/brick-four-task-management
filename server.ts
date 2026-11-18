@@ -431,7 +431,7 @@ export function createApp() {
 
       targetUserIds.forEach((uid) => {
         tasksStore.reminders.push({
-          id: `rem-${taskId}-${uid}-${idx}`,
+          id: `rem-${taskId}-${uid}-${idx}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           task_id: taskId,
           task_title: task.title,
           user_id: uid,
@@ -439,6 +439,7 @@ export function createApp() {
           relative_minutes_before: relativeMinutes,
           scheduled_at: scheduledAt!,
           remind_at: scheduledAt!,
+          message: `Reminder for task "${task.title}".`,
           is_sent: false,
         });
       });
@@ -695,6 +696,39 @@ export function createApp() {
     res.status(201).json(sendSuccess(newTask));
   });
 
+  // SET A REMINDER ON AN EXISTING TASK — either the assignee or the assigner can set one;
+  // createReminders() always schedules it for BOTH sides of the task, so whichever of them
+  // sets it, the reminder notification goes to assignee AND assigner when it fires.
+  apiRouter.post('/tasks/:id/reminders', async (req, res, next) => {
+    const task = await tasksStore.getTaskOrHydrate(req.params.id);
+    if (!task || task.is_deleted) {
+      return next(AppError.notFound(`Task with ID ${req.params.id} not found`));
+    }
+
+    const currentUser: User | undefined = req.fullUser || dbStore.users.get(req.user?.id || '');
+    const allUsers = Array.from(dbStore.users.values());
+    if (!currentUser || !canViewTask(currentUser, task, { allUsers, getTask })) {
+      return next(AppError.forbidden('You do not have permission to set a reminder on this task'));
+    }
+
+    const { type, relativeMinutes, scheduledAt } = req.body;
+    const rType = type === 'ABSOLUTE' ? 'ABSOLUTE' : 'RELATIVE';
+    if (rType === 'ABSOLUTE' && !scheduledAt) {
+      return next(AppError.badRequest('scheduledAt is required for an ABSOLUTE reminder'));
+    }
+    if (rType === 'RELATIVE' && !task.due_date) {
+      return next(AppError.badRequest('This task has no due date to base a relative reminder on'));
+    }
+
+    const before = tasksStore.reminders.length;
+    createReminders(task.id, task, [{ type: rType, relativeMinutes, scheduledAt }]);
+    const created = tasksStore.reminders.slice(before);
+    if (created.length === 0) {
+      return next(AppError.badRequest('Could not schedule that reminder'));
+    }
+    res.status(201).json(sendSuccess(created));
+  });
+
   // UPDATE TASK (PATCH /tasks/:id)
   apiRouter.patch('/tasks/:id', (req, res, next) => {
     const task = tasksStore.tasks.get(req.params.id);
@@ -725,13 +759,17 @@ export function createApp() {
       return next(AppError.forbidden('You do not have permission to update this task'));
     }
 
-    // Upstream monitors (e.g. the requesting head) can view & comment, but only assigner/assignee edit
+    // Upstream monitors (e.g. the requesting head) can view & comment; only the assignee can
+    // update their own progress; only the assigner can edit title/description/due date/assignee.
     const editorRole = getTaskActorRole(currentUser, task);
-    if (editorRole === 'OTHER' && (description !== undefined || progress_percent !== undefined)) {
+    if (editorRole === 'OTHER' && progress_percent !== undefined) {
       return next(AppError.forbidden('Only the assigner or assignee can edit this task'));
     }
-    if (editorRole !== 'ASSIGNER' && (title !== undefined || due_date !== undefined || assigned_to_id !== undefined)) {
-      return next(AppError.forbidden('Only the task assigner can change title, due date or assignee'));
+    if (
+      editorRole !== 'ASSIGNER' &&
+      (title !== undefined || due_date !== undefined || assigned_to_id !== undefined || description !== undefined)
+    ) {
+      return next(AppError.forbidden('Only the task assigner can change the title, description, due date or assignee'));
     }
     if (assigned_to_id !== undefined && assigned_to_id !== task.assigned_to_id) {
       const newAssignee = dbStore.users.get(assigned_to_id);
@@ -838,6 +876,13 @@ export function createApp() {
         if (!task.first_submitted_at) {
           task.first_submitted_at = nowIso;
         }
+        // Flags a submission made after the deadline as late (distinct from completed_on_time,
+        // which the assigner only settles once they approve it) — covers both the normal case
+        // (the overdue sweep already flipped is_overdue) and a deadline that just passed in the
+        // last few minutes before the sweep next runs.
+        task.submitted_late = Boolean(
+          task.is_overdue || (task.due_date && new Date(nowIso) > new Date(task.due_date))
+        );
 
         tasksStore.activityLogs.unshift({
           id: 'act-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
@@ -845,7 +890,7 @@ export function createApp() {
           task_title: task.title,
           user_id: currentUser.id,
           user_name: (currentUser as any).name || 'System User',
-          action: 'TASK_SUBMITTED',
+          action: task.submitted_late ? 'TASK_SUBMITTED_LATE' : 'TASK_SUBMITTED',
           field_name: 'submission_round',
           new_value: String(task.submission_count),
           created_at: nowIso,
@@ -1226,33 +1271,14 @@ export function createApp() {
       created_at: new Date().toISOString(),
     });
 
-    // Notify the new assignee, plus everyone upstream in the chain so requesting heads can see who picked it up
+    // Notify only the new assignee — this is their notification, not a broadcast to every
+    // manager upstream in the chain (that was showing people names/tasks unrelated to them).
     notifyUser(
       subordinate.id,
       'Task Delegated To You',
       `${currentUser.name || 'Your manager'} delegated: "${subtask.title}"`,
       'TASK_DELEGATED',
       newTaskId
-    );
-    const upstreamUserIds = new Set<string>();
-    const visitedAncestors = new Set<string>();
-    let ancestor: Task | undefined = parentTask;
-    while (ancestor && !visitedAncestors.has(ancestor.id)) {
-      visitedAncestors.add(ancestor.id);
-      upstreamUserIds.add(ancestor.created_by_id);
-      upstreamUserIds.add(ancestor.assigned_to_id);
-      ancestor = ancestor.parent_task_id ? tasksStore.tasks.get(ancestor.parent_task_id) : undefined;
-    }
-    upstreamUserIds.delete(currentUser.id);
-    upstreamUserIds.delete(subordinate.id);
-    upstreamUserIds.forEach((uid) =>
-      notifyUser(
-        uid,
-        'Task Delegated',
-        `${currentUser.name || 'A manager'} delegated "${parentTask.title}" to ${subordinate.name} (${subordinate.department})`,
-        'TASK_DELEGATED',
-        newTaskId
-      )
     );
 
     const enrichedSubtask = enrichTaskWithProgressAndChecklist(subtask);
@@ -1854,10 +1880,6 @@ export function createApp() {
       hierarchy_level: req.user?.hierarchy_level ?? 3,
     } as any;
 
-    if (currentUser.role === 'ADMIN') {
-      return res.json(sendSuccess(tasksStore.activityLogs));
-    }
-
     const filtered = tasksStore.activityLogs.filter((log) => {
       const task = tasksStore.tasks.get(log.task_id);
       if (!task || task.is_deleted) return false;
@@ -1868,41 +1890,23 @@ export function createApp() {
 
   // REMINDERS
   apiRouter.get('/reminders', (req, res) => {
+    // Scoped strictly to this logged-in user — a reminder is personal, same as a
+    // notification, so no ADMIN "see everyone's" bypass here either.
     const userId = req.user?.id || '';
-    const myReminders = tasksStore.reminders.filter((r) => r.user_id === userId || req.user?.role === 'ADMIN');
+    const myReminders = tasksStore.reminders
+      .filter((r) => r.user_id === userId && !r.is_sent)
+      .sort((a, b) => new Date(a.remind_at || 0).getTime() - new Date(b.remind_at || 0).getTime());
     res.json(sendSuccess(myReminders));
   });
 
   // Notifications
   apiRouter.get('/notifications', (req, res) => {
     const userId = req.user?.id || '';
-    if (tasksStore.notifications.length === 0) {
-      tasksStore.notifications.push(
-        {
-          id: 'notif-seed-1',
-          user_id: 'ALL',
-          title: 'Welcome to BrickFour Task Platform',
-          message: 'Real-time task delegation and notification engine active.',
-          type: 'TASK_ASSIGNED',
-          is_read: false,
-          created_at: new Date().toISOString(),
-        },
-        {
-          id: 'notif-seed-2',
-          user_id: 'usr-admin-001',
-          title: 'New Task Assignment',
-          message: 'You have pending tasks requiring review and approval.',
-          type: 'STATUS_CHANGED',
-          task_id: 'tsk-001',
-          is_read: false,
-          created_at: new Date(Date.now() - 1800000).toISOString(),
-        }
-      );
-    }
-    // Scoped strictly to this logged-in user (plus broadcast 'ALL' notices) — an ADMIN
-    // viewer must not see every employee's personal notifications.
+    // Scoped strictly to this logged-in user (plus broadcast 'ALL' notices), and only ever
+    // shows UNREAD items — once marked read (clicked, or "mark all read"), a notification is
+    // meant to disappear from the panel rather than pile up as old read clutter.
     const userNotifs = tasksStore.notifications.filter(
-      (n) => n.user_id === userId || n.user_id === 'ALL'
+      (n) => (n.user_id === userId || n.user_id === 'ALL') && !n.is_read
     );
     res.json(sendSuccess(userNotifs));
   });

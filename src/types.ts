@@ -121,6 +121,7 @@ export interface Task {
   is_overdue: boolean;
   overdue_since: string | null;
   completed_on_time: boolean | null;
+  submitted_late?: boolean | null;
   attachment_count?: number;
   submitted_attachment_count?: number;
   is_deleted: boolean;

@@ -214,6 +214,20 @@ async function loadVolatileCollectionsFromMongo() {
     }
   }
 
+  // REMINDERS
+  if (remindersCol) {
+    const count = await remindersCol.countDocuments();
+    if (count > 0) {
+      const rems = await remindersCol.find({}).toArray();
+      const clean = rems.map((r: any) => {
+        const { _id, ...rest } = r;
+        return rest;
+      });
+      tasksStore.reminders.length = 0;
+      Array.prototype.push.apply(tasksStore.reminders, clean);
+    }
+  }
+
   // TODOS
   if (todosCol) {
     const count = await todosCol.countDocuments();
@@ -432,6 +446,15 @@ export async function persistNotification(notif: NotificationItem): Promise<void
     await notificationsCol.updateOne({ id: notif.id }, { $set: notif as any }, { upsert: true });
   } catch (err) {
     console.error('[MongoDB] Failed to persist notification:', err);
+  }
+}
+
+export async function persistReminder(reminder: ReminderItem): Promise<void> {
+  if (!isConnected || !remindersCol) return;
+  try {
+    await remindersCol.updateOne({ id: reminder.id }, { $set: reminder as any }, { upsert: true });
+  } catch (err) {
+    console.error('[MongoDB] Failed to persist reminder:', err);
   }
 }
 

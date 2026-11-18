@@ -4,6 +4,7 @@
 
 import cron from 'node-cron';
 import { tasksStore, NotificationItem } from '../db/tasksStore';
+import { persistReminder } from '../db/mongodb';
 import { getIO } from '../sockets';
 
 /**
@@ -143,6 +144,9 @@ export function runReminderDispatch() {
 
         tasksStore.notifications.unshift(notif);
         r.is_sent = true;
+        // Mutating the reminder in place doesn't persist it — without this, the periodic
+        // Mongo resync reverts is_sent back to false and this dispatch re-fires forever.
+        persistReminder(r).catch((e) => console.error('[cron] Failed to persist reminder:', e));
 
         const io = getIO();
         if (io) {

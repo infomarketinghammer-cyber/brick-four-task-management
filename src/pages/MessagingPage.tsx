@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   MessageSquare,
@@ -57,8 +58,11 @@ interface MessageItem {
 export function MessagingPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((state) => state.user);
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
+    searchParams.get('c')
+  );
   const [messageInput, setMessageInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isNewChatModalOpen, setIsNewChatModalOpen] = useState(false);
@@ -82,7 +86,17 @@ export function MessagingPage() {
     refetchInterval: 5000, // Poll fallback alongside Socket.IO
   });
 
-  // Automatically select first conversation if none selected
+  // Deep-link support: clicking a conversation from the header's Messages dropdown lands
+  // here with ?c=<id> — jump straight to that conversation instead of always opening
+  // whichever one happens to be first in the list.
+  useEffect(() => {
+    const linkedId = searchParams.get('c');
+    if (linkedId && linkedId !== selectedConversationId) {
+      setSelectedConversationId(linkedId);
+    }
+  }, [searchParams]);
+
+  // Automatically select first conversation if none selected (and nothing was deep-linked)
   useEffect(() => {
     if (!selectedConversationId && conversations.length > 0) {
       setSelectedConversationId(conversations[0].id);
