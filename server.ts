@@ -66,6 +66,12 @@ import {
 export function createApp() {
   const app = express();
 
+  // Both Vercel and the long-running server sit behind a reverse proxy, so without this
+  // Express's req.ip resolves to the proxy's own socket address — the SAME value for every
+  // request from every client — collapsing the per-IP rate limiter below into one shared
+  // bucket for the entire user base instead of one per real client.
+  app.set('trust proxy', 1);
+
   // Security Hardening: Helmet Security Headers (configured for AI Studio preview iframe compatibility)
   app.use(
     helmet({
@@ -108,8 +114,12 @@ export function createApp() {
 
   app.use('/api/v1/auth', authRoutes);
 
-  // Global API Rate Limiting (1000 req per 15 min)
-  app.use('/api', rateLimit(15 * 60 * 1000, 1000));
+  // Global API Rate Limiting. The frontend polls several endpoints every 3-5s per active
+  // user (notifications, conversations, messages) — with many users active at once, and
+  // especially if several of them share one office/NAT IP, that adds up fast. Sized to
+  // comfortably absorb dozens of concurrently active real users while still catching actual
+  // abuse (a sustained ~22 req/sec from one IP for the full window).
+  app.use('/api', rateLimit(15 * 60 * 1000, 20000));
 
   app.use('/api/v1/users', userRoutes);
   app.use('/api/v1', todosRoutes);

@@ -8,6 +8,11 @@ import { dbStore } from '../../db/prisma';
 import { User } from '../../types';
 import { AppError } from '../../utils/errors';
 import {
+  persistRefreshToken,
+  fetchRefreshTokenFromMongo,
+  persistDeleteRefreshToken,
+} from '../../db/mongodb';
+import {
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
@@ -82,13 +87,15 @@ export class AuthService {
 
     const familyId = crypto.randomUUID ? crypto.randomUUID() : `fam-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-    dbStore.refreshTokens.set(refreshToken, {
+    const tokenRecord = {
       token: refreshToken,
       userId: user.id,
       familyId,
       isRevoked: false,
       createdAt: new Date(),
-    });
+    };
+    dbStore.refreshTokens.set(refreshToken, tokenRecord);
+    persistRefreshToken(tokenRecord).catch((e) => console.error('Failed to persist refresh token:', e));
 
     const { password_hash, ...userWithoutPassword } = user;
 
@@ -105,7 +112,18 @@ export class AuthService {
    * Generates a new access token using a valid refresh token with token rotation & reuse detection.
    */
   static async refresh(input: RefreshTokenInput) {
-    const record = dbStore.refreshTokens.get(input.refreshToken);
+    let record = dbStore.refreshTokens.get(input.refreshToken);
+
+    // Vercel runs several warm serverless instances behind the same URL — a token issued or
+    // rotated moments ago on a sibling instance won't be in THIS instance's memory yet.
+    // Fall back to Mongo before concluding the token is actually invalid.
+    if (!record) {
+      const fromMongo = await fetchRefreshTokenFromMongo(input.refreshToken);
+      if (fromMongo) {
+        record = fromMongo;
+        dbStore.refreshTokens.set(record.token, record);
+      }
+    }
 
     if (!record) {
       throw AppError.unauthorized('Refresh token is invalid or revoked', 'INVALID_REFRESH_TOKEN');
@@ -140,13 +158,16 @@ export class AuthService {
 
       // Rotate refresh token: Mark current as revoked and save new token in same family
       record.isRevoked = true;
-      dbStore.refreshTokens.set(newRefreshToken, {
+      persistRefreshToken(record).catch((e) => console.error('Failed to persist revoked refresh token:', e));
+      const newRecord = {
         token: newRefreshToken,
         userId: user.id,
         familyId: record.familyId,
         isRevoked: false,
         createdAt: new Date(),
-      });
+      };
+      dbStore.refreshTokens.set(newRefreshToken, newRecord);
+      persistRefreshToken(newRecord).catch((e) => console.error('Failed to persist new refresh token:', e));
 
       return {
         accessToken: newAccessToken,
@@ -168,6 +189,9 @@ export class AuthService {
         record.isRevoked = true;
       }
       dbStore.refreshTokens.delete(refreshToken);
+      persistDeleteRefreshToken(refreshToken).catch((e) =>
+        console.error('Failed to persist refresh token deletion:', e)
+      );
     }
     return { message: 'Logged out successfully' };
   }

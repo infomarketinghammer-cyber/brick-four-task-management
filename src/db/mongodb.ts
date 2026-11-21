@@ -352,6 +352,51 @@ export async function persistDeleteUser(userId: string): Promise<void> {
   }
 }
 
+// Refresh tokens are rotated on every /auth/refresh call. Vercel runs several warm
+// serverless instances behind the same URL, so a token rotated/issued on instance A was
+// invisible to instance B — any user whose next refresh (or logout) landed on a different
+// instance than the one that issued their current refresh token got "invalid or revoked"
+// and was force-logged-out, essentially at random. Persisted + hydrated-on-miss below.
+export async function persistRefreshToken(record: RefreshTokenRecord): Promise<void> {
+  if (!isConnected || !refreshTokensCol) return;
+  try {
+    await refreshTokensCol.updateOne({ token: record.token }, { $set: record as any }, { upsert: true });
+  } catch (err) {
+    console.error('[MongoDB] Failed to persist refresh token:', err);
+  }
+}
+
+export async function fetchRefreshTokenFromMongo(token: string): Promise<RefreshTokenRecord | null> {
+  if (!isConnected || !refreshTokensCol) return null;
+  try {
+    const doc = await refreshTokensCol.findOne({ token });
+    if (!doc) return null;
+    const { _id, ...record } = doc as any;
+    return record as RefreshTokenRecord;
+  } catch (err) {
+    console.error('[MongoDB] Failed to fetch refresh token:', err);
+    return null;
+  }
+}
+
+export async function persistDeleteRefreshToken(token: string): Promise<void> {
+  if (!isConnected || !refreshTokensCol) return;
+  try {
+    await refreshTokensCol.deleteOne({ token });
+  } catch (err) {
+    console.error('[MongoDB] Failed to delete refresh token:', err);
+  }
+}
+
+export async function persistRevokeAllUserRefreshTokens(userId: string): Promise<void> {
+  if (!isConnected || !refreshTokensCol) return;
+  try {
+    await refreshTokensCol.updateMany({ userId }, { $set: { isRevoked: true } });
+  } catch (err) {
+    console.error('[MongoDB] Failed to revoke user refresh tokens:', err);
+  }
+}
+
 export async function persistTask(task: Task): Promise<void> {
   if (!isConnected || !tasksCol) return;
   try {

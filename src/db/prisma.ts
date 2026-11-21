@@ -4,6 +4,7 @@
 
 import bcrypt from 'bcryptjs';
 import { Role, User } from '../types';
+import { persistRevokeAllUserRefreshTokens } from './mongodb';
 
 export class PrismaClient {
   async $transaction<T>(fn: (tx: any) => Promise<T>): Promise<T> {
@@ -41,6 +42,9 @@ class InMemoryDatabase {
         record.isRevoked = true;
       }
     }
+    persistRevokeAllUserRefreshTokens(userId).catch((e) =>
+      console.error('Failed to persist token revocation:', e)
+    );
   }
 
   public ensureSeeded() {
