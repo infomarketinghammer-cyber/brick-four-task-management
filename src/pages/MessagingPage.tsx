@@ -120,14 +120,17 @@ export function MessagingPage() {
     refetchInterval: 3000,
   });
 
-  // Fetch All Staff Users for New Chat Modal
-  const { data: staffData } = useQuery<{ total: number; users: User[] }>({
+  // Fetch All Staff Users for New Chat Modal — loaded as soon as the Messages page itself
+  // opens (not gated on the modal) so it's already in cache by the time "New Conversation"
+  // is clicked, instead of only starting the fetch — and the cold-start delay that comes
+  // with it on Vercel — right when the modal needs to show something.
+  const { data: staffData, isLoading: isLoadingStaff } = useQuery<{ total: number; users: User[] }>({
     queryKey: ['staff-users-for-chat'],
     queryFn: async () => {
       const res: any = await apiClient.get('/users?scope=messaging&limit=100');
       return res.data || { total: 0, users: [] };
     },
-    enabled: isNewChatModalOpen,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Scroll to bottom when messages load/change
@@ -574,7 +577,13 @@ export function MessagingPage() {
 
               {/* Staff List */}
               <div className="max-h-64 overflow-y-auto space-y-1.5 pt-1">
-                {eligibleStaff.length > 0 ? (
+                {isLoadingStaff ? (
+                  <div className="space-y-1.5">
+                    {[1, 2, 3, 4].map((i) => (
+                      <div key={i} className="h-14 bg-slate-100 animate-pulse rounded-2xl" />
+                    ))}
+                  </div>
+                ) : eligibleStaff.length > 0 ? (
                   eligibleStaff.map((staff) => (
                     <div
                       key={staff.id}

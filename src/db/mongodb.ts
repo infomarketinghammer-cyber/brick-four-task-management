@@ -101,50 +101,59 @@ export async function initMongoDB(): Promise<void> {
  */
 async function createCollectionIndexes() {
   if (!db) return;
-  try {
-    await usersCol?.createIndex({ id: 1 }, { unique: true });
-    await usersCol?.createIndex({ email: 1 }, { unique: true });
-    await usersCol?.createIndex({ department: 1 });
-    await usersCol?.createIndex({ manager_id: 1 });
+  // Every one of these is an independent round-trip to Atlas; running them one at a time
+  // added 2-3+ seconds to EVERY cold start on Vercel (the exact "first click after idle is
+  // slow" delay) before a single real request was even served. They don't depend on each
+  // other, so firing them all at once and waiting for the whole batch is the same end
+  // state in a fraction of the time.
+  const indexJobs: Promise<any>[] = [
+    usersCol?.createIndex({ id: 1 }, { unique: true }),
+    usersCol?.createIndex({ email: 1 }, { unique: true }),
+    usersCol?.createIndex({ department: 1 }),
+    usersCol?.createIndex({ manager_id: 1 }),
 
-    await tasksCol?.createIndex({ id: 1 }, { unique: true });
-    await tasksCol?.createIndex({ assigned_to_id: 1 });
-    await tasksCol?.createIndex({ created_by_id: 1 });
-    await tasksCol?.createIndex({ status: 1 });
-    await tasksCol?.createIndex({ parent_task_id: 1 });
+    tasksCol?.createIndex({ id: 1 }, { unique: true }),
+    tasksCol?.createIndex({ assigned_to_id: 1 }),
+    tasksCol?.createIndex({ created_by_id: 1 }),
+    tasksCol?.createIndex({ status: 1 }),
+    tasksCol?.createIndex({ parent_task_id: 1 }),
 
-    await checklistCol?.createIndex({ id: 1 }, { unique: true });
-    await checklistCol?.createIndex({ task_id: 1 });
+    checklistCol?.createIndex({ id: 1 }, { unique: true }),
+    checklistCol?.createIndex({ task_id: 1 }),
 
-    await activityLogsCol?.createIndex({ id: 1 }, { unique: true });
-    await activityLogsCol?.createIndex({ task_id: 1 });
-    await activityLogsCol?.createIndex({ created_at: -1 });
+    activityLogsCol?.createIndex({ id: 1 }, { unique: true }),
+    activityLogsCol?.createIndex({ task_id: 1 }),
+    activityLogsCol?.createIndex({ created_at: -1 }),
 
-    await notificationsCol?.createIndex({ id: 1 }, { unique: true });
-    await notificationsCol?.createIndex({ user_id: 1, is_read: 1 });
+    notificationsCol?.createIndex({ id: 1 }, { unique: true }),
+    notificationsCol?.createIndex({ user_id: 1, is_read: 1 }),
 
-    await todosCol?.createIndex({ id: 1 }, { unique: true });
-    await todosCol?.createIndex({ owner_id: 1 });
+    todosCol?.createIndex({ id: 1 }, { unique: true }),
+    todosCol?.createIndex({ owner_id: 1 }),
 
-    await todoStepsCol?.createIndex({ id: 1 }, { unique: true });
-    await todoStepsCol?.createIndex({ todo_id: 1 });
+    todoStepsCol?.createIndex({ id: 1 }, { unique: true }),
+    todoStepsCol?.createIndex({ todo_id: 1 }),
 
-    await eventsCol?.createIndex({ id: 1 }, { unique: true });
-    await eventsCol?.createIndex({ created_by: 1 });
+    eventsCol?.createIndex({ id: 1 }, { unique: true }),
+    eventsCol?.createIndex({ created_by: 1 }),
 
-    await inviteesCol?.createIndex({ id: 1 }, { unique: true });
-    await inviteesCol?.createIndex({ event_id: 1 });
+    inviteesCol?.createIndex({ id: 1 }, { unique: true }),
+    inviteesCol?.createIndex({ event_id: 1 }),
 
-    await conversationsCol?.createIndex({ id: 1 }, { unique: true });
-    await messagesCol?.createIndex({ id: 1 }, { unique: true });
-    await messagesCol?.createIndex({ conversationId: 1, created_at: 1 });
+    conversationsCol?.createIndex({ id: 1 }, { unique: true }),
+    messagesCol?.createIndex({ id: 1 }, { unique: true }),
+    messagesCol?.createIndex({ conversationId: 1, created_at: 1 }),
 
-    await refreshTokensCol?.createIndex({ token: 1 }, { unique: true });
+    refreshTokensCol?.createIndex({ token: 1 }, { unique: true }),
 
-    await commentsCol?.createIndex({ id: 1 }, { unique: true });
-    await commentsCol?.createIndex({ task_id: 1 });
-  } catch (err) {
-    console.warn('[MongoDB] Index creation notice:', err);
+    commentsCol?.createIndex({ id: 1 }, { unique: true }),
+    commentsCol?.createIndex({ task_id: 1 }),
+  ].filter(Boolean) as Promise<any>[];
+
+  const results = await Promise.allSettled(indexJobs);
+  const failed = results.filter((r) => r.status === 'rejected');
+  if (failed.length > 0) {
+    console.warn('[MongoDB] Index creation notice:', failed.map((r: any) => r.reason?.message || r.reason));
   }
 }
 
@@ -162,133 +171,147 @@ async function createCollectionIndexes() {
  * hooks stay intact for later live writes from this same instance.
  */
 async function loadVolatileCollectionsFromMongo() {
-  // USERS — an edit (department, reporting manager, role, deactivation, subordinate
-  // reassignment) made on one serverless instance must be visible to every other instance,
-  // not just the one that handled the request; previously users were only ever loaded once
-  // at cold start.
-  if (usersCol) {
-    const userCount = await usersCol.countDocuments();
-    if (userCount > 0) {
-      const mongoUsers = await usersCol.find({}).toArray();
-      for (const u of mongoUsers) {
-        const { _id, ...cleanUser } = u as any;
-        dbStore.users.set(cleanUser.id, cleanUser);
+  // Each of these loads a different collection into a different in-memory store, so none
+  // of them depend on each other — running them one after another (the original shape of
+  // this function) serialized ~9 collection scans into a single request's latency. Firing
+  // them together cuts that down to however long the SLOWEST one takes, instead of the sum.
+  await Promise.all([
+    // USERS — an edit (department, reporting manager, role, deactivation, subordinate
+    // reassignment) made on one serverless instance must be visible to every other
+    // instance, not just the one that handled the request; previously users were only
+    // ever loaded once at cold start.
+    (async () => {
+      if (!usersCol) return;
+      const userCount = await usersCol.countDocuments();
+      if (userCount > 0) {
+        const mongoUsers = await usersCol.find({}).toArray();
+        for (const u of mongoUsers) {
+          const { _id, ...cleanUser } = u as any;
+          dbStore.users.set(cleanUser.id, cleanUser);
+        }
       }
-    }
-  }
+    })(),
 
-  // TASKS
-  if (tasksCol) {
-    const taskCount = await tasksCol.countDocuments();
-    if (taskCount > 0) {
-      const mongoTasks = await tasksCol.find({}).toArray();
-      for (const t of mongoTasks) {
-        const { _id, ...cleanTask } = t as any;
-        Map.prototype.set.call(tasksStore.tasks, cleanTask.id, cleanTask);
+    // TASKS
+    (async () => {
+      if (!tasksCol) return;
+      const taskCount = await tasksCol.countDocuments();
+      if (taskCount > 0) {
+        const mongoTasks = await tasksCol.find({}).toArray();
+        for (const t of mongoTasks) {
+          const { _id, ...cleanTask } = t as any;
+          Map.prototype.set.call(tasksStore.tasks, cleanTask.id, cleanTask);
+        }
       }
-    }
-  }
+    })(),
 
-  // CHECKLIST ITEMS
-  if (checklistCol) {
-    const count = await checklistCol.countDocuments();
-    if (count > 0) {
-      const items = await checklistCol.find({}).toArray();
-      for (const item of items) {
-        const { _id, ...cleanItem } = item as any;
-        Map.prototype.set.call(tasksStore.checklistItems, cleanItem.id, cleanItem);
+    // CHECKLIST ITEMS
+    (async () => {
+      if (!checklistCol) return;
+      const count = await checklistCol.countDocuments();
+      if (count > 0) {
+        const items = await checklistCol.find({}).toArray();
+        for (const item of items) {
+          const { _id, ...cleanItem } = item as any;
+          Map.prototype.set.call(tasksStore.checklistItems, cleanItem.id, cleanItem);
+        }
       }
-    }
-  }
+    })(),
 
-  // ACTIVITY LOGS
-  if (activityLogsCol) {
-    const count = await activityLogsCol.countDocuments();
-    if (count > 0) {
-      const logs = await activityLogsCol.find({}).sort({ created_at: -1 }).limit(500).toArray();
-      const clean = logs.map((l: any) => {
-        const { _id, ...rest } = l;
-        return rest;
-      });
-      tasksStore.activityLogs.length = 0;
-      Array.prototype.push.apply(tasksStore.activityLogs, clean);
-    }
-  }
-
-  // NOTIFICATIONS
-  if (notificationsCol) {
-    const count = await notificationsCol.countDocuments();
-    if (count > 0) {
-      const notifs = await notificationsCol.find({}).sort({ created_at: -1 }).limit(200).toArray();
-      const clean = notifs.map((n: any) => {
-        const { _id, ...rest } = n;
-        return rest;
-      });
-      tasksStore.notifications.length = 0;
-      Array.prototype.push.apply(tasksStore.notifications, clean);
-    }
-  }
-
-  // REMINDERS
-  if (remindersCol) {
-    const count = await remindersCol.countDocuments();
-    if (count > 0) {
-      const rems = await remindersCol.find({}).toArray();
-      const clean = rems.map((r: any) => {
-        const { _id, ...rest } = r;
-        return rest;
-      });
-      tasksStore.reminders.length = 0;
-      Array.prototype.push.apply(tasksStore.reminders, clean);
-    }
-  }
-
-  // TODOS
-  if (todosCol) {
-    const count = await todosCol.countDocuments();
-    if (count > 0) {
-      const todos = await todosCol.find({}).toArray();
-      for (const todo of todos) {
-        const { _id, ...clean } = todo as any;
-        todosStore.todos.set(clean.id, clean);
+    // ACTIVITY LOGS
+    (async () => {
+      if (!activityLogsCol) return;
+      const count = await activityLogsCol.countDocuments();
+      if (count > 0) {
+        const logs = await activityLogsCol.find({}).sort({ created_at: -1 }).limit(500).toArray();
+        const clean = logs.map((l: any) => {
+          const { _id, ...rest } = l;
+          return rest;
+        });
+        tasksStore.activityLogs.length = 0;
+        Array.prototype.push.apply(tasksStore.activityLogs, clean);
       }
-    }
-  }
+    })(),
 
-  // TODO LISTS & STEPS
-  if (todoListsCol) {
-    const lists = await todoListsCol.find({}).toArray();
-    for (const l of lists) {
-      const { _id, ...clean } = l as any;
-      todosStore.todoLists.set(clean.id, clean);
-    }
-  }
-  if (todoStepsCol) {
-    const steps = await todoStepsCol.find({}).toArray();
-    for (const s of steps) {
-      const { _id, ...clean } = s as any;
-      todosStore.todoSteps.set(clean.id, clean);
-    }
-  }
-
-  // CALENDAR EVENTS & INVITEES
-  if (eventsCol) {
-    const count = await eventsCol.countDocuments();
-    if (count > 0) {
-      const evts = await eventsCol.find({}).toArray();
-      for (const evt of evts) {
-        const { _id, ...clean } = evt as any;
-        calendarStore.events.set(clean.id, clean);
+    // NOTIFICATIONS
+    (async () => {
+      if (!notificationsCol) return;
+      const count = await notificationsCol.countDocuments();
+      if (count > 0) {
+        const notifs = await notificationsCol.find({}).sort({ created_at: -1 }).limit(200).toArray();
+        const clean = notifs.map((n: any) => {
+          const { _id, ...rest } = n;
+          return rest;
+        });
+        tasksStore.notifications.length = 0;
+        Array.prototype.push.apply(tasksStore.notifications, clean);
       }
-    }
-  }
-  if (inviteesCol) {
-    const invs = await inviteesCol.find({}).toArray();
-    for (const inv of invs) {
-      const { _id, ...clean } = inv as any;
-      calendarStore.invitees.set(clean.id, clean);
-    }
-  }
+    })(),
+
+    // REMINDERS
+    (async () => {
+      if (!remindersCol) return;
+      const count = await remindersCol.countDocuments();
+      if (count > 0) {
+        const rems = await remindersCol.find({}).toArray();
+        const clean = rems.map((r: any) => {
+          const { _id, ...rest } = r;
+          return rest;
+        });
+        tasksStore.reminders.length = 0;
+        Array.prototype.push.apply(tasksStore.reminders, clean);
+      }
+    })(),
+
+    // TODOS, TODO LISTS & STEPS
+    (async () => {
+      if (todosCol) {
+        const count = await todosCol.countDocuments();
+        if (count > 0) {
+          const todos = await todosCol.find({}).toArray();
+          for (const todo of todos) {
+            const { _id, ...clean } = todo as any;
+            todosStore.todos.set(clean.id, clean);
+          }
+        }
+      }
+      if (todoListsCol) {
+        const lists = await todoListsCol.find({}).toArray();
+        for (const l of lists) {
+          const { _id, ...clean } = l as any;
+          todosStore.todoLists.set(clean.id, clean);
+        }
+      }
+      if (todoStepsCol) {
+        const steps = await todoStepsCol.find({}).toArray();
+        for (const s of steps) {
+          const { _id, ...clean } = s as any;
+          todosStore.todoSteps.set(clean.id, clean);
+        }
+      }
+    })(),
+
+    // CALENDAR EVENTS & INVITEES
+    (async () => {
+      if (eventsCol) {
+        const count = await eventsCol.countDocuments();
+        if (count > 0) {
+          const evts = await eventsCol.find({}).toArray();
+          for (const evt of evts) {
+            const { _id, ...clean } = evt as any;
+            calendarStore.events.set(clean.id, clean);
+          }
+        }
+      }
+      if (inviteesCol) {
+        const invs = await inviteesCol.find({}).toArray();
+        for (const inv of invs) {
+          const { _id, ...clean } = inv as any;
+          calendarStore.invitees.set(clean.id, clean);
+        }
+      }
+    })(),
+  ]);
 }
 
 /**

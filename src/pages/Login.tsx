@@ -82,13 +82,14 @@ export function Login() {
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" autoComplete="off">
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">Email Address</label>
             <div className="relative">
               <Mail size={18} className="absolute left-3.5 top-3 text-slate-400" />
               <input
                 type="email"
+                autoComplete="off"
                 {...register('email')}
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:bg-white focus:border-indigo-600 focus:outline-none transition-all placeholder:text-slate-400 font-medium"
                 placeholder="user@brickfour.com"
@@ -108,6 +109,7 @@ export function Login() {
               <Lock size={18} className="absolute left-3.5 top-3 text-slate-400" />
               <input
                 type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 {...register('password')}
                 className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:bg-white focus:border-indigo-600 focus:outline-none transition-all placeholder:text-slate-400 font-medium"
                 placeholder="••••••••"
