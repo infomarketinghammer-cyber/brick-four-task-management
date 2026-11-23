@@ -162,6 +162,21 @@ async function createCollectionIndexes() {
  * hooks stay intact for later live writes from this same instance.
  */
 async function loadVolatileCollectionsFromMongo() {
+  // USERS — an edit (department, reporting manager, role, deactivation, subordinate
+  // reassignment) made on one serverless instance must be visible to every other instance,
+  // not just the one that handled the request; previously users were only ever loaded once
+  // at cold start.
+  if (usersCol) {
+    const userCount = await usersCol.countDocuments();
+    if (userCount > 0) {
+      const mongoUsers = await usersCol.find({}).toArray();
+      for (const u of mongoUsers) {
+        const { _id, ...cleanUser } = u as any;
+        dbStore.users.set(cleanUser.id, cleanUser);
+      }
+    }
+  }
+
   // TASKS
   if (tasksCol) {
     const taskCount = await tasksCol.countDocuments();

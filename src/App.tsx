@@ -17,6 +17,7 @@ import { TodosPage } from './pages/TodosPage';
 import { TeamWorkload } from './pages/TeamWorkload';
 import { CalendarPage } from './pages/CalendarPage';
 import { KpiPage } from './pages/KpiPage';
+import { Settings } from './pages/Settings';
 import { ProtectedRoute, RoleRoute } from './components/RouteGuards';
 import { ToastContainer } from './components/ToastContainer';
 import { useSocket } from './hooks/useSocket';
@@ -58,6 +59,7 @@ export default function App() {
                 <Route path="/todos" element={<TodosPage />} />
                 <Route path="/messages" element={<MessagingPage />} />
                 <Route path="/kpi" element={<KpiPage />} />
+                <Route path="/settings" element={<Settings />} />
               </Route>
             </Route>
 

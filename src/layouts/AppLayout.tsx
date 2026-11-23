@@ -20,6 +20,7 @@ import {
   Building2,
   Calendar as CalendarIcon,
   Target,
+  Settings,
 } from 'lucide-react';
 
 import { useAuthStore } from '../store/authStore';
@@ -30,6 +31,7 @@ import { useCapabilities } from '../hooks/useCapabilities';
 import { DarodeJogLogo } from '../components/DarodeJogLogo';
 import { AdminAssistant } from '../components/AdminAssistant';
 import { playNotificationSound } from '../utils/notificationSound';
+import { ChangePasswordModal } from '../components/ChangePasswordModal';
 
 export function AppLayout() {
   const queryClient = useQueryClient();
@@ -41,7 +43,7 @@ export function AppLayout() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
 
-  const { user, logout, setAuth } = useAuthStore();
+  const { user, logout, setAuth, updateUser } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -119,6 +121,7 @@ export function AppLayout() {
     { label: 'To-Do', path: '/todos', icon: ListTodo, roles: ['ADMIN', 'DEPT_HEAD', 'TEAM_LEAD', 'EXECUTIVE'] },
     { label: 'Messages', path: '/messages', icon: MessageSquare, roles: ['ADMIN', 'DEPT_HEAD', 'TEAM_LEAD', 'EXECUTIVE'] },
     { label: 'KRA & KPI', path: '/kpi', icon: Target, roles: ['ADMIN', 'DEPT_HEAD', 'TEAM_LEAD', 'EXECUTIVE'] },
+    { label: 'Settings', path: '/settings', icon: Settings, roles: ['ADMIN', 'DEPT_HEAD', 'TEAM_LEAD', 'EXECUTIVE'] },
   ];
 
   const filteredNavItems = navItems.filter((item) => {
@@ -542,6 +545,17 @@ export function AppLayout() {
           );
         })}
       </nav>
+
+      {/* First login with a temporary/reset password — blocks the rest of the app until
+          a new password is set, and can't be dismissed. */}
+      {user?.must_change_password && (
+        <ChangePasswordModal
+          isOpen
+          forced
+          onClose={() => {}}
+          onChanged={() => updateUser({ must_change_password: false })}
+        />
+      )}
     </div>
   );
 }

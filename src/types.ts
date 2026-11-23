@@ -59,6 +59,7 @@ export interface User {
   location?: string | null;
   date_of_joining?: string | null;
   is_active: boolean;
+  must_change_password?: boolean;
   last_login_at?: Date | string | null;
   created_at?: Date | string;
   updated_at?: Date | string;

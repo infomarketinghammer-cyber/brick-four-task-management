@@ -243,6 +243,62 @@ const FlowchartCard: React.FC<FlowchartCardProps> = ({
 };
 
 // ----------------------------------------------------------------------
+// Flowchart Branch (generic, recursive) — connects however many direct reports a node
+// actually has, at any depth, instead of hand-positioned lines for a fixed set of names.
+// A middle child's horizontal connector spans its whole column (meeting its neighbours
+// exactly at the column edge); the first/last child's connector only spans the half of
+// its column facing its siblings, so the bus line never overshoots past the outermost card.
+// ----------------------------------------------------------------------
+interface FlowchartTreeProps {
+  node: OrgNode;
+  isRootNode?: boolean;
+  checkCardMatch: (node: OrgNode) => boolean;
+  hasFilterActive: boolean;
+  onSelect: (node: OrgNode) => void;
+}
+
+function FlowchartTree({ node, isRootNode = false, checkCardMatch, hasFilterActive, onSelect }: FlowchartTreeProps) {
+  const children = node.directReports || [];
+  const lineColor = isRootNode ? 'bg-[#8B1E22]' : 'bg-slate-300';
+
+  return (
+    <div className="flex flex-col items-center">
+      <FlowchartCard
+        node={node}
+        isRoot={isRootNode}
+        isMatch={checkCardMatch(node)}
+        isDimmed={hasFilterActive && !checkCardMatch(node)}
+        onSelect={onSelect}
+      />
+      {children.length > 0 && (
+        <>
+          <div className={`w-[2px] h-6 sm:h-8 ${lineColor}`} />
+          <div className="flex flex-row flex-nowrap items-start justify-center">
+            {children.map((child, idx) => (
+              <div key={child.id} className="flex flex-col items-center px-2.5 sm:px-3 relative">
+                {children.length > 1 && (
+                  <div
+                    className={`absolute top-0 h-[2px] ${lineColor}`}
+                    style={{ left: idx === 0 ? '50%' : 0, right: idx === children.length - 1 ? '50%' : 0 }}
+                  />
+                )}
+                <div className={`w-[2px] h-5 sm:h-6 ${lineColor}`} />
+                <FlowchartTree
+                  node={child}
+                  checkCardMatch={checkCardMatch}
+                  hasFilterActive={hasFilterActive}
+                  onSelect={onSelect}
+                />
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------
 // Indented Tree List Row (For Tree List View mode)
 // ----------------------------------------------------------------------
 interface OrgNodeItemProps {
@@ -467,20 +523,6 @@ export function OrgChart() {
     );
   }, [orgTree]);
 
-  // Level 1 Pillars in exact order as PDF
-  const level1Pillars = useMemo(() => {
-    if (!rootNode) return [];
-    return rootNode.directReports || [];
-  }, [rootNode]);
-
-  // Dynamic column width based on subtree width to guarantee zero card overlap
-  const getColumnWidthClass = (pillar: OrgNode) => {
-    const name = pillar.name.toLowerCase();
-    if (name.includes('sanghshil')) return 'w-[756px] min-w-[756px] shrink-0';
-    if (name.includes('dwarka') || name.includes('shailesh')) return 'w-[564px] min-w-[564px] shrink-0';
-    if (name.includes('santosh')) return 'w-[376px] min-w-[376px] shrink-0';
-    return 'w-[188px] min-w-[188px] shrink-0';
-  };
 
   // Zoom controls
   const handleZoomIn = () => setZoomLevel((prev) => Math.min(prev + 10, 140));
@@ -596,12 +638,6 @@ export function OrgChart() {
       </div>
     );
   }
-
-  // Find specific columns with subtrees
-  const dwarkaNode = level1Pillars.find((n) => n.name.toLowerCase().includes('dwarka'));
-  const sanghshilNode = level1Pillars.find((n) => n.name.toLowerCase().includes('sanghshil'));
-  const shaileshNode = level1Pillars.find((n) => n.name.toLowerCase().includes('shailesh'));
-  const santoshNode = level1Pillars.find((n) => n.name.toLowerCase().includes('santosh'));
 
   return (
     <div className="space-y-4 max-w-full overflow-hidden">
@@ -745,222 +781,19 @@ export function OrgChart() {
               transformOrigin: 'top center',
               transition: 'transform 0.15s ease-out',
             }}
-            className="min-w-[3480px] mx-auto py-6 flex flex-col items-center select-none"
+            className="w-max mx-auto py-6 flex flex-col items-center select-none"
           >
-            {/* 1. ROOT NODE: Hemant Sir (Director / CEO) */}
-            <div className="flex flex-col items-center relative">
-              <FlowchartCard
-                node={rootNode}
-                isRoot
-                isMatch={checkCardMatch(rootNode)}
-                isDimmed={hasFilterActive && !checkCardMatch(rootNode)}
-                onSelect={setSelectedEmployee}
-              />
-
-              {/* Vertical connector trunk from Hemant Sir */}
-              <div className="w-[2px] h-8 bg-[#8B1E22]" />
-            </div>
-
-            {/* 2. MAIN HORIZONTAL BUS CONNECTOR SPANNING OVER 9 PILLARS */}
-            <div className="flex flex-row items-start justify-center gap-6 relative pt-0 min-w-max">
-              {/* Horizontal line across all 9 pillars: starts at center of col 1 (Amol: 94px) and ends at center of last pillar */}
-              <div
-                className="absolute top-0 h-[2px] bg-[#8B1E22] z-10"
-                style={{
-                  left: '94px',
-                  right: `${
-                    (level1Pillars.length > 0
-                      ? (() => {
-                          const last = level1Pillars[level1Pillars.length - 1];
-                          const name = last.name.toLowerCase();
-                          if (name.includes('sanghshil')) return 756;
-                          if (name.includes('dwarka') || name.includes('shailesh')) return 564;
-                          if (name.includes('santosh')) return 376;
-                          return 188;
-                        })()
-                      : 188) / 2
-                  }px`,
-                }}
-              />
-              {/* Center junction dot */}
-              <div className="w-2.5 h-2.5 rounded-full bg-[#8B1E22] absolute left-1/2 -top-[4px] -translate-x-1/2 z-20" />
-
-              {level1Pillars.map((pillar) => {
-                const isMatch = checkCardMatch(pillar);
-                const isDimmed = hasFilterActive && !isMatch;
-                const colWidthClass = getColumnWidthClass(pillar);
-
-                return (
-                  <div key={pillar.id} className={`${colWidthClass} flex flex-col items-center`}>
-                    {/* Vertical drop line from horizontal bus to card */}
-                    <div className="w-[2px] h-6 bg-[#8B1E22]" />
-
-                    {/* Pillar Card */}
-                    <FlowchartCard
-                      node={pillar}
-                      isMatch={isMatch}
-                      isDimmed={isDimmed}
-                      onSelect={setSelectedEmployee}
-                    />
-
-                    {/* Subtree Branches for Pillars with Subordinates */}
-                    {pillar.name.toLowerCase().includes('dwarka') && dwarkaNode && (
-                      <div className="flex flex-col items-center mt-0 w-full">
-                        {/* Down line */}
-                        <div className="w-[2px] h-6 bg-slate-300" />
-                        {/* Sub-bus for Dwarka's 3 reports: Archana, Balasaheb, Vikas */}
-                        <div className="w-full relative pt-0">
-                          <div className="absolute top-0 left-[90px] right-[90px] h-[2px] bg-slate-300 z-10" />
-                          <div className="grid grid-cols-3 gap-3 w-full">
-                            {dwarkaNode.directReports.map((subNode) => (
-                              <div key={subNode.id} className="flex flex-col items-center">
-                                <div className="w-[2px] h-5 bg-slate-300" />
-                                <FlowchartCard
-                                  node={subNode}
-                                  isMatch={checkCardMatch(subNode)}
-                                  isDimmed={hasFilterActive && !checkCardMatch(subNode)}
-                                  onSelect={setSelectedEmployee}
-                                />
-
-                                {/* Vikas Khatik has Darshana Uttam Ghodake under him */}
-                                {subNode.name.toLowerCase().includes('vikas') &&
-                                  subNode.directReports &&
-                                  subNode.directReports.length > 0 && (
-                                    <div className="flex flex-col items-center mt-0">
-                                      <div className="w-[2px] h-6 bg-slate-300 relative flex items-center justify-center">
-                                        <div className="w-1.5 h-1.5 border-b-2 border-r-2 border-slate-400 rotate-45 absolute bottom-0" />
-                                      </div>
-                                      {subNode.directReports.map((leafNode) => (
-                                        <FlowchartCard
-                                          key={leafNode.id}
-                                          node={leafNode}
-                                          isMatch={checkCardMatch(leafNode)}
-                                          isDimmed={hasFilterActive && !checkCardMatch(leafNode)}
-                                          onSelect={setSelectedEmployee}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Sanghshil's Team: Atul, Kapil, Nishant, Omkar (siblings) — Sonal under Kapil, Sachin under Omkar */}
-                    {pillar.name.toLowerCase().includes('sanghshil') && sanghshilNode && (
-                      <div className="flex flex-col items-center mt-0 w-full">
-                        <div className="w-[2px] h-6 bg-slate-300" />
-                        {/* Sub-bus for Sanghshil's subordinates */}
-                        <div className="w-full relative pt-0 flex justify-center">
-                          <div className="absolute top-0 left-[100px] right-[100px] h-[2px] bg-slate-300 z-10" />
-                          {/* flex-nowrap keeps every direct report on one row, however many there are,
-                              so a sibling never wraps underneath another and looks like its subordinate */}
-                          <div className="flex flex-row flex-nowrap justify-center gap-3">
-                            {sanghshilNode.directReports.map((subNode) => (
-                              <div key={subNode.id} className="flex flex-col items-center">
-                                <div className="w-[2px] h-5 bg-slate-300" />
-                                <FlowchartCard
-                                  node={subNode}
-                                  isMatch={checkCardMatch(subNode)}
-                                  isDimmed={hasFilterActive && !checkCardMatch(subNode)}
-                                  onSelect={setSelectedEmployee}
-                                />
-
-                                {/* Kapil has Sonal, Omkar has Sachin */}
-                                {subNode.directReports && subNode.directReports.length > 0 && (
-                                  <div className="flex flex-col items-center mt-0">
-                                    <div className="w-[2px] h-5 bg-slate-300 relative flex items-center justify-center">
-                                      <div className="w-1.5 h-1.5 border-b-2 border-r-2 border-slate-400 rotate-45 absolute bottom-0" />
-                                    </div>
-                                    {subNode.directReports.map((leafNode) => (
-                                      <FlowchartCard
-                                        key={leafNode.id}
-                                        node={leafNode}
-                                        isMatch={checkCardMatch(leafNode)}
-                                        isDimmed={hasFilterActive && !checkCardMatch(leafNode)}
-                                        onSelect={setSelectedEmployee}
-                                      />
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Shailesh Kerkar's Team: Ganesh Shivaji Veer, Jyotsana Nikum (+ Akshay), Prajeet Patil */}
-                    {pillar.name.toLowerCase().includes('shailesh') && shaileshNode && (
-                      <div className="flex flex-col items-center mt-0 w-full">
-                        <div className="w-[2px] h-6 bg-slate-300" />
-                        <div className="w-full relative pt-0">
-                          <div className="absolute top-0 left-[90px] right-[90px] h-[2px] bg-slate-300 z-10" />
-                          <div className="grid grid-cols-3 gap-3 w-full">
-                            {shaileshNode.directReports.map((subNode) => (
-                              <div key={subNode.id} className="flex flex-col items-center">
-                                <div className="w-[2px] h-5 bg-slate-300" />
-                                <FlowchartCard
-                                  node={subNode}
-                                  isMatch={checkCardMatch(subNode)}
-                                  isDimmed={hasFilterActive && !checkCardMatch(subNode)}
-                                  onSelect={setSelectedEmployee}
-                                />
-
-                                {/* Jyotsana has Akshay Sonawane under her */}
-                                {subNode.name.toLowerCase().includes('jyotsana') &&
-                                  subNode.directReports &&
-                                  subNode.directReports.length > 0 && (
-                                    <div className="flex flex-col items-center mt-0">
-                                      <div className="w-[2px] h-6 bg-slate-300 relative flex items-center justify-center">
-                                        <div className="w-1.5 h-1.5 border-b-2 border-r-2 border-slate-400 rotate-45 absolute bottom-0" />
-                                      </div>
-                                      {subNode.directReports.map((leafNode) => (
-                                        <FlowchartCard
-                                          key={leafNode.id}
-                                          node={leafNode}
-                                          isMatch={checkCardMatch(leafNode)}
-                                          isDimmed={hasFilterActive && !checkCardMatch(leafNode)}
-                                          onSelect={setSelectedEmployee}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Santosh Kotgire's Team: Suvidha Deshmukh, Tayamma Bhandari */}
-                    {pillar.name.toLowerCase().includes('santosh') && santoshNode && (
-                      <div className="flex flex-col items-center mt-0 w-full">
-                        <div className="w-[2px] h-6 bg-slate-300" />
-                        <div className="w-full relative pt-0">
-                          <div className="absolute top-0 left-[90px] right-[90px] h-[2px] bg-slate-300 z-10" />
-                          <div className="grid grid-cols-2 gap-3 w-full">
-                            {santoshNode.directReports.map((subNode) => (
-                              <div key={subNode.id} className="flex flex-col items-center">
-                                <div className="w-[2px] h-5 bg-slate-300" />
-                                <FlowchartCard
-                                  node={subNode}
-                                  isMatch={checkCardMatch(subNode)}
-                                  isDimmed={hasFilterActive && !checkCardMatch(subNode)}
-                                  onSelect={setSelectedEmployee}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            {/* Generic recursive renderer — connects exactly as many lines as there are
+                actual direct reports, at every level, so it stays correct as people are
+                added, removed, or reassigned instead of drifting out of sync with a
+                hand-positioned layout. */}
+            <FlowchartTree
+              node={rootNode}
+              isRootNode
+              checkCardMatch={checkCardMatch}
+              hasFilterActive={hasFilterActive}
+              onSelect={setSelectedEmployee}
+            />
 
             {/* Bottom Footer Watermark (Matching PDF Diagram) */}
             <div className="w-full max-w-[3400px] mt-16 pt-6 border-t border-slate-200 flex items-center justify-between text-slate-400 text-xs px-4">

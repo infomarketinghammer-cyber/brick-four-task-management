@@ -17,5 +17,6 @@ router.post('/reset-password', rateLimit(15 * 60 * 1000, 5), AuthController.rese
 
 // Protected routes
 router.get('/me', authenticate, AuthController.getMe);
+router.post('/change-password', authenticate, AuthController.changePassword);
 
 export default router;

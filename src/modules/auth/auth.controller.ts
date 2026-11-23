@@ -5,6 +5,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { sendSuccess } from '../../utils/envelope';
 import {
+  ChangePasswordSchema,
   ForgotPasswordSchema,
   LoginSchema,
   RefreshTokenSchema,
@@ -57,6 +58,16 @@ export class AuthController {
     try {
       const validated = ResetPasswordSchema.parse(req.body);
       const result = await AuthService.resetPassword(validated);
+      res.json(sendSuccess(result));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async changePassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const validated = ChangePasswordSchema.parse(req.body);
+      const result = await AuthService.changePassword(req.user!.id, validated);
       res.json(sendSuccess(result));
     } catch (err) {
       next(err);

@@ -21,6 +21,8 @@ import {
 import { apiClient } from '../api/client';
 import { showToast } from '../store/toastStore';
 import { Role, User } from '../types';
+import { EmployeeCombobox } from './EmployeeCombobox';
+import { SuggestInput } from './SuggestInput';
 
 const editUserSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -103,6 +105,14 @@ export function EditUserModal({ user, isOpen, onClose }: EditUserModalProps) {
   });
 
   const selectedRole = watch('role');
+  const selectedDepartment = watch('department') || '';
+  const designationValue = watch('designation') || '';
+  const managerIdValue = watch('manager_id') || '';
+
+  // Departments/designations aren't a fixed enum — suggest whatever already exists in the
+  // directory, but still allow typing a brand new one.
+  const knownDepartments = allUsers.map((u) => u.department);
+  const knownDesignations = allUsers.map((u) => u.designation);
 
   // Reset form when modal opens with user data
   useEffect(() => {
@@ -125,11 +135,30 @@ export function EditUserModal({ user, isOpen, onClose }: EditUserModalProps) {
     }
   }, [user, isOpen, reset]);
 
+  // If the department changes away from the currently-picked manager's department, that
+  // manager is no longer a valid option in the (now department-filtered) list — clear the
+  // selection instead of silently keeping a hidden, now-invisible cross-department value.
+  useEffect(() => {
+    if (!managerIdValue || !selectedDepartment) return;
+    const stillEligible = allUsers.some((u) => u.id === managerIdValue && u.department === selectedDepartment);
+    if (!stillEligible) setValue('manager_id', '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDepartment]);
+
   if (!isOpen || !user) return null;
 
   // Calculate descendant IDs to exclude user self and descendants from manager dropdown
   const descendantIds = getDescendantIds(user.id, allUsers);
   const eligibleManagers = allUsers.filter(
+    (u) =>
+      u.id !== user.id &&
+      !descendantIds.includes(u.id) &&
+      u.is_active &&
+      (!selectedDepartment || u.department === selectedDepartment)
+  );
+  // Reassigning an outgoing manager's reports isn't tied to the department field being
+  // edited above, so it isn't department-restricted the way the main manager picker is.
+  const reassignEligibleManagers = allUsers.filter(
     (u) => u.id !== user.id && !descendantIds.includes(u.id) && u.is_active
   );
 
@@ -298,10 +327,10 @@ export function EditUserModal({ user, isOpen, onClose }: EditUserModalProps) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Designation / Title</label>
-                <input
-                  type="text"
-                  {...register('designation')}
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:border-indigo-600 focus:outline-none"
+                <SuggestInput
+                  suggestions={knownDesignations}
+                  value={designationValue}
+                  onChange={(v) => setValue('designation', v, { shouldDirty: true, shouldValidate: true })}
                 />
                 {errors.designation && (
                   <p className="text-xs text-red-500 mt-0.5">{errors.designation.message}</p>
@@ -323,16 +352,11 @@ export function EditUserModal({ user, isOpen, onClose }: EditUserModalProps) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Department</label>
-                <select
-                  {...register('department')}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:outline-none"
-                >
-                  <option value="Executive">Executive</option>
-                  <option value="Engineering">Engineering</option>
-                  <option value="Product">Product</option>
-                  <option value="Operations">Operations</option>
-                  <option value="HR">HR</option>
-                </select>
+                <SuggestInput
+                  suggestions={knownDepartments}
+                  value={selectedDepartment}
+                  onChange={(v) => setValue('department', v, { shouldDirty: true, shouldValidate: true })}
+                />
                 {errors.department && (
                   <p className="text-xs text-red-500 mt-0.5">{errors.department.message}</p>
                 )}
@@ -357,19 +381,15 @@ export function EditUserModal({ user, isOpen, onClose }: EditUserModalProps) {
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 Reporting Line Manager
               </label>
-              <select
-                {...register('manager_id')}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:outline-none"
-              >
-                <option value="">-- No Manager (Top Level) --</option>
-                {eligibleManagers.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.designation} - {m.role})
-                  </option>
-                ))}
-              </select>
+              <EmployeeCombobox
+                options={eligibleManagers.map((m) => ({ id: m.id, name: m.name, designation: m.designation, role: m.role }))}
+                value={managerIdValue}
+                onChange={(id) => setValue('manager_id', id, { shouldDirty: true })}
+                noneLabel="-- No Manager (Top Level) --"
+                placeholder="Type a name to search..."
+              />
               <p className="text-[10px] text-slate-400 mt-1">
-                Excludes current user and all direct/indirect descendants to prevent cycle loops.
+                Showing {selectedDepartment || 'this'} department only — excludes the current user and all direct/indirect descendants to prevent cycle loops.
               </p>
             </div>
 
@@ -440,19 +460,13 @@ export function EditUserModal({ user, isOpen, onClose }: EditUserModalProps) {
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Reassign {subordinateCount} Report(s) To:
               </label>
-              <select
+              <EmployeeCombobox
+                options={reassignEligibleManagers.map((m) => ({ id: m.id, name: m.name, designation: m.designation, role: m.role }))}
                 value={reassignManagerId}
-                onChange={(e) => setReassignManagerId(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:border-indigo-600 focus:outline-none"
-                required
-              >
-                <option value="">-- Choose New Manager --</option>
-                {eligibleManagers.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.designation} - {m.role})
-                  </option>
-                ))}
-              </select>
+                onChange={setReassignManagerId}
+                noneLabel="-- Choose New Manager --"
+                placeholder="Type a name to search..."
+              />
             </div>
 
             <div className="flex items-center justify-between pt-3 border-t border-slate-100">

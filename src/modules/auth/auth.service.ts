@@ -11,13 +11,16 @@ import {
   persistRefreshToken,
   fetchRefreshTokenFromMongo,
   persistDeleteRefreshToken,
+  persistUser,
 } from '../../db/mongodb';
+import { sendPasswordResetEmail } from '../../utils/email';
 import {
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
 } from '../../utils/jwt';
 import {
+  ChangePasswordInput,
   ForgotPasswordInput,
   LoginInput,
   RefreshTokenInput,
@@ -46,26 +49,12 @@ export class AuthService {
       throw AppError.unauthorized('Invalid email or password credentials');
     }
 
-    // Verify password with stored hash and Name@123 rule
-    let isPasswordValid = await bcrypt.compare(input.password, user.password_hash);
-    if (!isPasswordValid) {
-      const firstName = user.name.split(' ')[0].trim();
-      const capitalizedFirst = firstName.charAt(0).toUpperCase() + firstName.slice(1).toLowerCase();
-      const expectedPass1 = `${capitalizedFirst}@123`;
-      const expectedPass2 = `${user.name.replace(/\s+/g, '')}@123`;
-      const expectedPass3 = `${user.name.split(' ')[0]}@123`;
-      const expectedPass4 = `${firstName.toLowerCase()}@123`;
-
-      if (
-        input.password === expectedPass1 ||
-        input.password === expectedPass2 ||
-        input.password === expectedPass3 ||
-        input.password.toLowerCase() === expectedPass4 ||
-        input.password === 'Password123!'
-      ) {
-        isPasswordValid = true;
-      }
-    }
+    // Verify against the stored hash only. The seed data's hash already IS the "Name@123"
+    // convention (see makePasswordHash in prisma.ts), so that default already works for any
+    // account that's never had its password changed — a plaintext fallback here on top of it
+    // was a standing backdoor: once a password was changed or reset, the OLD "Name@123" would
+    // still log in forever, which is exactly the opposite of what a password change means.
+    const isPasswordValid = await bcrypt.compare(input.password, user.password_hash);
 
     if (!isPasswordValid) {
       throw AppError.unauthorized('Invalid email or password credentials');
@@ -213,9 +202,14 @@ export class AuthService {
 
     dbStore.resetTokens.set(resetToken, { userId: user.id, expiresAt });
 
+    const emailSent = await sendPasswordResetEmail(user.email, user.name, resetToken);
+
     return {
       message: 'If the email exists, a password reset link has been dispatched.',
-      resetToken, // Included for development debugging
+      // Only handed back in the response when no real email is configured — a local/dev
+      // fallback so the flow is still testable without Resend set up. Once RESEND_API_KEY
+      // is set, the token only ever goes out over email, never in this response.
+      ...(emailSent ? {} : { resetToken }),
     };
   }
 
@@ -236,11 +230,38 @@ export class AuthService {
 
     // Cost factor 12 for password hashing
     user.password_hash = await bcrypt.hash(input.newPassword, 12);
+    user.must_change_password = false;
     user.updated_at = new Date();
+    persistUser(user);
 
     dbStore.resetTokens.delete(input.token);
 
     return { message: 'Password reset successfully. You may now login.' };
+  }
+
+  /**
+   * Self-service password change — used both for the "you must change your password"
+   * first-login flow and a voluntary change from Settings. Requires the current password
+   * (whether that's the temporary one or an existing real one) so this can't be used to
+   * take over a session without already knowing the current credential.
+   */
+  static async changePassword(userId: string, input: ChangePasswordInput) {
+    const user = dbStore.users.get(userId);
+    if (!user) {
+      throw AppError.notFound('User not found');
+    }
+
+    const isCurrentValid = await bcrypt.compare(input.currentPassword, user.password_hash);
+    if (!isCurrentValid) {
+      throw AppError.unauthorized('Current password is incorrect', 'INVALID_CURRENT_PASSWORD');
+    }
+
+    user.password_hash = await bcrypt.hash(input.newPassword, 12);
+    user.must_change_password = false;
+    user.updated_at = new Date();
+    persistUser(user);
+
+    return { message: 'Password changed successfully.' };
   }
 
   /**

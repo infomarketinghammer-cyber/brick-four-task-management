@@ -135,6 +135,7 @@ export function createApp() {
   // re-pulls from MongoDB if it's been a while since this instance last checked.
   apiRouter.use(async (req, res, next) => {
     await resyncIfStale();
+    await resyncConversationsIfStale();
     // node-cron's schedules never fire on Vercel (no persistent process), so overdue-sweep
     // and reminder dispatch piggyback on normal request traffic instead.
     runScheduledJobsIfDue();
@@ -1981,6 +1982,32 @@ export function createApp() {
 
   const conversationsList: ConversationData[] = [];
   const messagesMap = new Map<string, MessageData[]>();
+
+  // Conversations/messages previously only loaded once per cold start via a fire-and-forget
+  // promise, with no periodic refresh — so (a) a request landing before that promise
+  // resolved saw an empty list ("Messages shows blank"), and (b) a message sent on a sibling
+  // Vercel instance was invisible here until this instance happened to cold-start again
+  // ("didn't see the previous message"). Resynced the same way tasks/notifications are:
+  // once synchronously before the first request, then periodically while stale.
+  let lastConvResyncAt = 0;
+  async function resyncConversationsIfStale(thresholdMs = 8000) {
+    const now = Date.now();
+    if (conversationsList.length > 0 && now - lastConvResyncAt < thresholdMs) return;
+    lastConvResyncAt = now;
+    try {
+      const loadedConvs = await loadConversationsFromMongo();
+      for (const conv of loadedConvs) {
+        const existingIdx = conversationsList.findIndex((c) => c.id === conv.id);
+        if (existingIdx >= 0) conversationsList.splice(existingIdx, 1);
+        conversationsList.push(conv);
+        const msgs = await loadMessagesFromMongo(conv.id);
+        messagesMap.set(conv.id, msgs);
+      }
+    } catch (err) {
+      console.error('[MongoDB] Error during conversation resync:', err);
+    }
+  }
+
   const HEADS_CHANNEL_ID = 'conv-dept-heads';
   const LEGACY_ADMIN_ALIAS_ID = 'usr-admin-001';
 
@@ -2048,25 +2075,16 @@ export function createApp() {
     };
   }
 
-  // Hydrate conversations from MongoDB Atlas if available
-  loadConversationsFromMongo().then(async (loadedConvs) => {
-    if (loadedConvs && loadedConvs.length > 0) {
-      for (const conv of loadedConvs) {
-        const existingIdx = conversationsList.findIndex((c) => c.id === conv.id);
-        if (existingIdx >= 0) conversationsList.splice(existingIdx, 1);
-        conversationsList.push(conv);
-        const msgs = await loadMessagesFromMongo(conv.id);
-        messagesMap.set(conv.id, msgs);
-      }
-      console.log(`[MongoDB] Loaded ${loadedConvs.length} chat conversations from MongoDB.`);
-    }
-  }).catch((err) => console.error('[MongoDB] Error loading conversations:', err));
+  // Initial hydration now happens via resyncConversationsIfStale() on the first request
+  // (see the apiRouter resync middleware) instead of a fire-and-forget promise here, so a
+  // request can no longer race past it and see an empty list.
 
   // GET /conversations
   apiRouter.get('/conversations', (req, res) => {
     const currentUserId = req.user?.id || '';
     syncHeadsChannel();
 
+    // Scoped strictly to conversations this logged-in user is actually a participant in.
     const userConversations = conversationsList
       .filter((c) => c.participantIds.includes(currentUserId))
       .map((c) => serializeConversation(c, currentUserId))
@@ -2184,8 +2202,14 @@ export function createApp() {
       return next(conversation);
     }
 
-    // Reset unread count for current user
-    conversation.unreadCounts[currentUserId] = 0;
+    // Reset unread count for current user. Mutating the object in place doesn't persist it
+    // (only .set()/push() on the Persisted wrappers do) — without this, the periodic
+    // cross-instance resync pulls the old non-zero count back from Mongo a few seconds
+    // later and the "unread" badge reappears on a conversation you already opened.
+    if (conversation.unreadCounts[currentUserId] !== 0) {
+      conversation.unreadCounts[currentUserId] = 0;
+      persistConversation(conversation);
+    }
 
     const msgs = messagesMap.get(req.params.id) || [];
     const enrichedMsgs = msgs.map((m) => {

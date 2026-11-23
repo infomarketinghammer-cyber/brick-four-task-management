@@ -88,20 +88,23 @@ export function MessagingPage() {
 
   // Deep-link support: clicking a conversation from the header's Messages dropdown lands
   // here with ?c=<id> — jump straight to that conversation instead of always opening
-  // whichever one happens to be first in the list.
+  // whichever one happens to be first in the list. Tracked by the last ?c value actually
+  // acted on (not by selectedConversationId) so this never re-fires and stomps a
+  // conversation the user picked manually afterward — useSearchParams isn't guaranteed to
+  // keep a stable reference across unrelated re-renders, so this effect can re-run even
+  // when the URL itself hasn't changed.
+  const lastConsumedDeepLinkRef = useRef<string | null>(null);
   useEffect(() => {
     const linkedId = searchParams.get('c');
-    if (linkedId && linkedId !== selectedConversationId) {
+    if (linkedId && linkedId !== lastConsumedDeepLinkRef.current) {
+      lastConsumedDeepLinkRef.current = linkedId;
       setSelectedConversationId(linkedId);
     }
   }, [searchParams]);
 
-  // Automatically select first conversation if none selected (and nothing was deep-linked)
-  useEffect(() => {
-    if (!selectedConversationId && conversations.length > 0) {
-      setSelectedConversationId(conversations[0].id);
-    }
-  }, [conversations, selectedConversationId]);
+  // No auto-selecting a conversation on open — the page starts blank (showing the "select
+  // or start a conversation" placeholder) unless deep-linked, and only opens a thread when
+  // the user actually clicks one from the list.
 
   // Fetch Messages for Selected Conversation
   const { data: messages = [], isLoading: isLoadingMessages } = useQuery<MessageItem[]>({
@@ -202,6 +205,10 @@ export function MessagingPage() {
 
   // Filter conversations
   const filteredConversations = conversations.filter((c) => {
+    // Hide empty threads (no message ever sent in them) from the list — except the one
+    // currently open, so a freshly started conversation doesn't vanish from view the
+    // instant it's created, before you've sent its first message.
+    if (!c.lastMessage && c.id !== selectedConversationId) return false;
     if (c.isGroup) {
       const q = searchQuery.toLowerCase();
       return (c.name || '').toLowerCase().includes(q) || c.participants?.some((p) => p.name?.toLowerCase().includes(q));
@@ -252,11 +259,11 @@ export function MessagingPage() {
       </div>
 
       {/* Main Chat Box Container */}
-      <div className="flex-1 bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden grid grid-cols-1 md:grid-cols-12">
+      <div className="flex-1 min-h-0 bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden grid grid-cols-1 md:grid-cols-12">
         {/* ============================================== */}
         {/* LEFT COLUMN: Conversation List & Search        */}
         {/* ============================================== */}
-        <div className="md:col-span-4 lg:col-span-4 border-r border-slate-200 flex flex-col h-full bg-slate-50/50">
+        <div className="md:col-span-4 lg:col-span-4 border-r border-slate-200 flex flex-col h-full min-h-0 bg-slate-50/50">
           {/* Conversation Search Bar */}
           <div className="p-3.5 border-b border-slate-200 space-y-2 bg-white">
             <div className="relative">
@@ -349,7 +356,7 @@ export function MessagingPage() {
         {/* ============================================== */}
         {/* RIGHT COLUMN: Active Message Thread & Send Box  */}
         {/* ============================================== */}
-        <div className="md:col-span-8 lg:col-span-8 flex flex-col h-full bg-white">
+        <div className="md:col-span-8 lg:col-span-8 flex flex-col h-full min-h-0 bg-white">
           {activeConversation ? (
             <>
               {/* Thread Header */}

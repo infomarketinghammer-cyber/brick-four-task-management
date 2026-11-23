@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -23,6 +23,8 @@ import { apiClient } from '../api/client';
 import { showToast } from '../store/toastStore';
 import { Role, User } from '../types';
 import { EditUserModal } from '../components/EditUserModal';
+import { EmployeeCombobox } from '../components/EmployeeCombobox';
+import { SuggestInput } from '../components/SuggestInput';
 
 const createUserSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -68,16 +70,36 @@ export function TeamManagement() {
     handleSubmit,
     watch,
     reset,
+    setValue,
     formState: { errors },
   } = useForm<CreateUserFormData>({
     resolver: zodResolver(createUserSchema),
     defaultValues: {
       role: 'EXECUTIVE',
-      department: 'Engineering',
+      department: '',
     },
   });
 
   const selectedRoleWatch = watch('role');
+  const selectedDepartmentWatch = watch('department');
+  const designationWatch = watch('designation') || '';
+  const managerIdWatch = watch('manager_id') || '';
+
+  // Departments/designations aren't a fixed enum — suggest whatever already exists in the
+  // directory, but still allow typing a brand new one.
+  const knownDepartments = (usersData?.users || []).map((u) => u.department);
+  const knownDesignations = (usersData?.users || []).map((u) => u.designation);
+
+  // Clear the picked manager if it's no longer in the (now department-filtered) list for
+  // the currently selected department.
+  useEffect(() => {
+    if (!managerIdWatch || !usersData?.users) return;
+    const stillEligible = usersData.users.some(
+      (u) => u.id === managerIdWatch && u.department === selectedDepartmentWatch
+    );
+    if (!stillEligible) setValue('manager_id', '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDepartmentWatch]);
 
   // Create User Mutation
   const createUserMutation = useMutation({
@@ -128,11 +150,32 @@ export function TeamManagement() {
       queryClient.invalidateQueries({ queryKey: ['org-chart'] });
       setDeactivateUser(null);
     },
+    onError: (err: any) => {
+      const apiErr = err?.response?.data?.error;
+      if (apiErr?.code === 'HAS_SUBORDINATES') {
+        // This button has no reassignment UI of its own — hand off to the Edit modal, which
+        // already walks the admin through reassigning this person's reports before deactivating.
+        const user = deactivateUser;
+        setDeactivateUser(null);
+        if (user) setEditUser(user);
+        showToast({
+          type: 'info',
+          title: 'Reassign their team first',
+          message: `${user?.name || 'This employee'} has ${apiErr?.details?.subordinate_count ?? 'active'} direct report(s). Toggle "Account Active Status" off here and you'll be asked who to reassign them to.`,
+        });
+      } else {
+        showToast({
+          type: 'error',
+          title: 'Deactivation Failed',
+          message: apiErr?.message || 'Failed to deactivate user.',
+        });
+      }
+    },
   });
 
   // Hierarchy rules for Manager Dropdown filtering
   // ADMIN level 0; DEPT_HEAD level 1 (needs level 0 manager); TEAM_LEAD level 2 (needs level <= 1); EXECUTIVE level 3 (needs level <= 2)
-  const getEligibleManagers = (role: Role) => {
+  const getEligibleManagers = (role: Role, department?: string) => {
     if (!usersData?.users) return [];
 
     let maxAllowedLevel = 0;
@@ -140,7 +183,9 @@ export function TeamManagement() {
     else if (role === 'TEAM_LEAD') maxAllowedLevel = 1;
     else if (role === 'EXECUTIVE') maxAllowedLevel = 2;
 
-    return usersData.users.filter((u) => u.hierarchy_level <= maxAllowedLevel && u.is_active);
+    return usersData.users.filter(
+      (u) => u.hierarchy_level <= maxAllowedLevel && u.is_active && (!department || u.department === department)
+    );
   };
 
   const roleBadgeStyles: Record<Role, string> = {
@@ -373,11 +418,11 @@ export function TeamManagement() {
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Department</label>
-                  <input
-                    type="text"
-                    {...register('department')}
+                  <SuggestInput
+                    suggestions={knownDepartments}
+                    value={selectedDepartmentWatch || ''}
+                    onChange={(v) => setValue('department', v, { shouldDirty: true, shouldValidate: true })}
                     placeholder="Engineering"
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:border-indigo-600 focus:outline-none"
                   />
                   {errors.department && <p className="text-xs text-red-500 mt-0.5">{errors.department.message}</p>}
                 </div>
@@ -385,11 +430,11 @@ export function TeamManagement() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Designation</label>
-                <input
-                  type="text"
-                  {...register('designation')}
+                <SuggestInput
+                  suggestions={knownDesignations}
+                  value={designationWatch}
+                  onChange={(v) => setValue('designation', v, { shouldDirty: true, shouldValidate: true })}
                   placeholder="Senior Developer"
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:border-indigo-600 focus:outline-none"
                 />
                 {errors.designation && <p className="text-xs text-red-500 mt-0.5">{errors.designation.message}</p>}
               </div>
@@ -397,17 +442,21 @@ export function TeamManagement() {
               {selectedRoleWatch !== 'ADMIN' && (
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Reporting Line Manager</label>
-                  <select
-                    {...register('manager_id')}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:outline-none"
-                  >
-                    <option value="">-- Select Manager --</option>
-                    {getEligibleManagers(selectedRoleWatch).map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({m.designation} - {m.role})
-                      </option>
-                    ))}
-                  </select>
+                  <EmployeeCombobox
+                    options={getEligibleManagers(selectedRoleWatch, selectedDepartmentWatch).map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      designation: m.designation,
+                      role: m.role,
+                    }))}
+                    value={managerIdWatch}
+                    onChange={(id) => setValue('manager_id', id, { shouldDirty: true })}
+                    noneLabel="-- Select Manager --"
+                    placeholder="Type a name to search..."
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Showing {selectedDepartmentWatch || 'this'} department only.
+                  </p>
                 </div>
               )}
 

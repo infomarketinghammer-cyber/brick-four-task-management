@@ -16,6 +16,7 @@ import {
   UpdateUserInput,
 } from './users.schema';
 import { persistUser, persistDeleteUser } from '../../db/mongodb';
+import { sendWelcomeEmail } from '../../utils/email';
 
 export interface OrgNode {
   id: string;
@@ -170,6 +171,7 @@ export class UsersService {
       designation: input.designation,
       hierarchy_level,
       is_active: true,
+      must_change_password: true,
       created_at: new Date(),
       updated_at: new Date(),
     };
@@ -177,13 +179,17 @@ export class UsersService {
     dbStore.users.set(newUser.id, newUser);
     persistUser(newUser);
 
+    const emailSent = await sendWelcomeEmail(newUser.email, newUser.name, tempPassword);
+
     const { password_hash: _, ...sanitized } = newUser;
 
     return {
       user: sanitized,
       invite: {
         temporaryPassword: tempPassword,
-        message: 'User created successfully. Invite email queued with temporary credentials.',
+        message: emailSent
+          ? 'User created successfully. Invite email with temporary credentials has been sent.'
+          : 'User created successfully. No email service is configured — share the temporary password below with the employee yourself.',
       },
     };
   }
@@ -258,6 +264,7 @@ export class UsersService {
             const oldMgr = sub.manager_id;
             sub.manager_id = targetManager.id;
             sub.updated_at = new Date();
+            persistUser(sub);
             tasksStore.activityLogs.unshift({
               id: `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
               task_id: '',
@@ -351,6 +358,7 @@ export class UsersService {
     const password_hash = await bcrypt.hash(tempPassword, 10);
 
     user.password_hash = password_hash;
+    user.must_change_password = true;
     user.updated_at = new Date();
     persistUser(user);
 
@@ -374,12 +382,26 @@ export class UsersService {
   }
 
   /**
-   * Soft deletes a user (is_active = false).
+   * Soft deletes a user (is_active = false). Mirrors the same active-subordinates guard as
+   * updateUser() — without it, deactivating a manager here silently orphaned their reports
+   * (left pointing at an inactive manager_id) with no warning, unlike going through the Edit
+   * modal's toggle, which already required reassigning them first.
    */
   static async deleteUser(userId: string) {
     const user = dbStore.users.get(userId);
     if (!user) {
       throw AppError.notFound(`User with ID '${userId}' not found`);
+    }
+
+    const allUsers = Array.from(dbStore.users.values());
+    const activeSubordinates = allUsers.filter((u) => u.manager_id === userId && u.is_active);
+    if (activeSubordinates.length > 0) {
+      throw new AppError(
+        'User has active subordinates and cannot be deactivated without reassigning them',
+        409,
+        'HAS_SUBORDINATES',
+        { code: 'HAS_SUBORDINATES', subordinate_count: activeSubordinates.length }
+      );
     }
 
     user.is_active = false;
