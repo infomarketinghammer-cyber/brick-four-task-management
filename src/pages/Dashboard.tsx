@@ -510,21 +510,22 @@ export function Dashboard() {
           ) : !teamLoad || teamLoad.length === 0 ? (
             <p className="text-xs text-slate-500 py-6 text-center">No team workload data available.</p>
           ) : (
-            <div className="h-72 w-full pt-4">
+            <div className="h-96 w-full pt-4">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={(teamLoad || []).slice(0, 10)}
-                  margin={{ top: 10, right: 20, left: -10, bottom: 20 }}
+                  margin={{ top: 10, right: 20, left: -10, bottom: 90 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                   <XAxis
                     dataKey="userName"
                     tick={{ fontSize: 11, fill: '#64748b' }}
                     interval={0}
-                    angle={-20}
+                    angle={-45}
                     textAnchor="end"
+                    height={90}
                   />
-                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} />
+                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: '#0f172a',
@@ -534,7 +535,7 @@ export function Dashboard() {
                       border: 'none',
                     }}
                   />
-                  <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                  <Legend verticalAlign="top" wrapperStyle={{ fontSize: '12px', paddingBottom: '10px' }} />
                   <Bar dataKey="openTasksCount" name="Open Tasks" fill="#6366f1" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -555,7 +556,7 @@ export function Dashboard() {
             <span className="text-[11px] font-semibold text-slate-400">Live</span>
           </div>
 
-          <div className="space-y-4 flex-1">
+          <div className="space-y-4 flex-1 max-h-[360px] overflow-y-auto pr-1">
             {isLoadingActivity ? (
               <div className="space-y-3">
                 {[1, 2, 3].map((i) => (
@@ -596,7 +597,7 @@ export function Dashboard() {
             </span>
           </div>
 
-          <div className="space-y-3 flex-1">
+          <div className="space-y-3 flex-1 max-h-[360px] overflow-y-auto pr-1">
             {isLoadingReminders ? (
               <div className="space-y-3">
                 {[1, 2, 3].map((i) => (

@@ -70,6 +70,7 @@ export function MessagingPage() {
   const [newChatMode, setNewChatMode] = useState<'direct' | 'group'>('direct');
   const [headsOnly, setHeadsOnly] = useState(false);
   const [groupName, setGroupName] = useState('');
+  const [groupError, setGroupError] = useState<string | null>(null);
   const [groupMemberIds, setGroupMemberIds] = useState<string[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -189,10 +190,15 @@ export function MessagingPage() {
     setHeadsOnly(false);
     setGroupName('');
     setGroupMemberIds([]);
+    setGroupError(null);
   }
 
   const toggleGroupMember = (userId: string) => {
-    setGroupMemberIds((prev) => (prev.includes(userId) ? prev.filter((x) => x !== userId) : [...prev, userId]));
+    setGroupMemberIds((prev) => {
+      const next = prev.includes(userId) ? prev.filter((x) => x !== userId) : [...prev, userId];
+      if (next.length >= 2) setGroupError(null);
+      return next;
+    });
   };
 
   // Display helpers that work for both 1:1 and group conversations
@@ -544,14 +550,26 @@ export function MessagingPage() {
               </div>
 
               {newChatMode === 'group' && (
-                <input
-                  type="text"
-                  value={groupName}
-                  onChange={(e) => setGroupName(e.target.value)}
-                  maxLength={80}
-                  placeholder="Group name, e.g. Land Deal – Sales & Legal"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-indigo-500"
-                />
+                <div>
+                  <input
+                    type="text"
+                    value={groupName}
+                    onChange={(e) => {
+                      setGroupName(e.target.value);
+                      if (e.target.value.trim()) setGroupError(null);
+                    }}
+                    maxLength={80}
+                    placeholder="Group name, e.g. Land Deal – Sales & Legal"
+                    className={`w-full px-3 py-2 bg-slate-50 border rounded-xl text-xs font-semibold text-slate-900 focus:outline-none ${
+                      groupError && !groupName.trim()
+                        ? 'border-red-400 focus:border-red-500'
+                        : 'border-slate-200 focus:border-indigo-500'
+                    }`}
+                  />
+                  {groupError && (
+                    <p className="text-[11px] text-red-500 font-semibold mt-1">{groupError}</p>
+                  )}
+                </div>
               )}
 
               <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-600 cursor-pointer select-none">
@@ -630,10 +648,19 @@ export function MessagingPage() {
                   </span>
                   <button
                     type="button"
-                    disabled={!groupName.trim() || groupMemberIds.length < 2 || createGroupMutation.isPending}
-                    onClick={() =>
-                      createGroupMutation.mutate({ name: groupName.trim(), participant_ids: groupMemberIds })
-                    }
+                    disabled={createGroupMutation.isPending}
+                    onClick={() => {
+                      if (!groupName.trim()) {
+                        setGroupError('Please enter a group name to create this conversation.');
+                        return;
+                      }
+                      if (groupMemberIds.length < 2) {
+                        setGroupError('Please select at least 2 members for the group.');
+                        return;
+                      }
+                      setGroupError(null);
+                      createGroupMutation.mutate({ name: groupName.trim(), participant_ids: groupMemberIds });
+                    }}
                     className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-xs disabled:opacity-40"
                   >
                     {createGroupMutation.isPending ? 'Creating...' : 'Create Group'}
