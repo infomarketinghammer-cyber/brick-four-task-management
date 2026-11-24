@@ -14,6 +14,15 @@ interface DelegateTaskModalProps {
   parentTask: Task;
 }
 
+// Blocks picking a past date/time for a brand-new subtask's deadline — it would be marked
+// OVERDUE the instant it's saved otherwise.
+function nowForDateTimeInput(): string {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0, 16);
+}
+
 export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskModalProps) {
   const queryClient = useQueryClient();
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
@@ -22,9 +31,17 @@ export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskM
   const [subtaskTitle, setSubtaskTitle] = useState(`[Subtask] ${parentTask.title}`);
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<TaskPriority>('CRITICAL');
-  const [dueDate, setDueDate] = useState(
-    parentTask.due_date ? new Date(parentTask.due_date).toISOString().slice(0, 16) : ''
-  );
+  const [dueDate, setDueDate] = useState(() => {
+    // Only pre-fill from the parent's due date when it's still in the future — an overdue
+    // parent's own due date would otherwise show as a pre-filled value already below the
+    // `min` the picker enforces.
+    if (parentTask.due_date && new Date(parentTask.due_date).getTime() > Date.now()) {
+      const d = new Date(parentTask.due_date);
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      return d.toISOString().slice(0, 16);
+    }
+    return '';
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Org-wide assignable users: peers at my level (any department) plus anyone below my level
@@ -222,6 +239,7 @@ export function DelegateTaskModal({ isOpen, onClose, parentTask }: DelegateTaskM
               <input
                 type="datetime-local"
                 value={dueDate}
+                min={nowForDateTimeInput()}
                 onChange={(e) => setDueDate(e.target.value)}
                 className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-indigo-500"
               />

@@ -6,9 +6,16 @@
 
 import { MongoClient, Db, Collection } from 'mongodb';
 import { dbStore, RefreshTokenRecord } from './prisma';
-import { tasksStore, ActivityLogItem, NotificationItem, ReminderItem } from './tasksStore';
+import {
+  tasksStore,
+  ActivityLogItem,
+  NotificationItem,
+  ReminderItem,
+  PushSubscriptionRecord,
+} from './tasksStore';
 import { todosStore } from './todosStore';
 import { calendarStore, EventInviteeRecord } from './calendarStore';
+import { AttachmentRecord } from './attachmentsStore';
 import { Task, TaskChecklistItem, User, TodoItem, TodoList, TodoStep, CalendarEventModel } from '../types';
 
 export const MONGODB_DEFAULT_URI =
@@ -36,6 +43,8 @@ export let conversationsCol: Collection<any> | null = null;
 export let messagesCol: Collection<any> | null = null;
 export let refreshTokensCol: Collection<RefreshTokenRecord> | null = null;
 export let commentsCol: Collection<any> | null = null;
+export let pushSubscriptionsCol: Collection<PushSubscriptionRecord> | null = null;
+export let attachmentsCol: Collection<any> | null = null;
 
 export function getMongoDb(): Db | null {
   return db;
@@ -81,6 +90,8 @@ export async function initMongoDB(): Promise<void> {
     messagesCol = db.collection<any>('messages');
     refreshTokensCol = db.collection<RefreshTokenRecord>('refresh_tokens');
     commentsCol = db.collection<any>('task_comments');
+    pushSubscriptionsCol = db.collection<PushSubscriptionRecord>('push_subscriptions');
+    attachmentsCol = db.collection<any>('attachments');
 
     // Create Indexes for high performance
     await createCollectionIndexes();
@@ -148,6 +159,12 @@ async function createCollectionIndexes() {
 
     commentsCol?.createIndex({ id: 1 }, { unique: true }),
     commentsCol?.createIndex({ task_id: 1 }),
+
+    pushSubscriptionsCol?.createIndex({ endpoint: 1 }, { unique: true }),
+    pushSubscriptionsCol?.createIndex({ user_id: 1 }),
+
+    attachmentsCol?.createIndex({ id: 1 }, { unique: true }),
+    attachmentsCol?.createIndex({ task_id: 1 }),
   ].filter(Boolean) as Promise<any>[];
 
   const results = await Promise.allSettled(indexJobs);
@@ -311,6 +328,17 @@ async function loadVolatileCollectionsFromMongo() {
         }
       }
     })(),
+
+    // PUSH SUBSCRIPTIONS — a device that subscribed via a request handled by one serverless
+    // instance must still be reachable when the overdue-sweep/reminder cron fires on another.
+    (async () => {
+      if (!pushSubscriptionsCol) return;
+      const subs = await pushSubscriptionsCol.find({}).toArray();
+      for (const s of subs) {
+        const { _id, ...clean } = s as any;
+        Map.prototype.set.call(tasksStore.pushSubscriptions, clean.endpoint, clean);
+      }
+    })(),
   ]);
 }
 
@@ -387,6 +415,24 @@ export async function persistDeleteUser(userId: string): Promise<void> {
     await usersCol.deleteOne({ id: userId });
   } catch (err) {
     console.error('[MongoDB] Failed to delete user:', err);
+  }
+}
+
+// A brand-new employee created on one Vercel instance can be invisible to another instance
+// for up to resyncIfStale's threshold — long enough to hit "Recipient user not found" if
+// someone starts messaging them right away. Self-heals that specific miss on demand instead
+// of making every lookup wait for the next periodic resync.
+export async function fetchUserByIdFromMongo(userId: string): Promise<User | null> {
+  if (!isConnected || !usersCol) return null;
+  try {
+    const doc = await usersCol.findOne({ id: userId });
+    if (!doc) return null;
+    const { _id, ...user } = doc as any;
+    dbStore.users.set(user.id, user);
+    return user as User;
+  } catch (err) {
+    console.error('[MongoDB] Failed to fetch user by id:', err);
+    return null;
   }
 }
 
@@ -496,6 +542,71 @@ export async function fetchCommentsForTaskFromMongo(taskId: string): Promise<any
   }
 }
 
+// Attachments were written only to local disk (os.tmpdir() on Vercel) with metadata kept
+// only in an in-memory Map — on a serverless deploy, neither the bytes nor the record exist
+// on any instance other than the one that happened to handle the upload, so an assignee
+// whose request lands on a different warm instance sees no attachment at all. The actual
+// file content is stored here (base64, well under Mongo's 16MB document limit given the
+// app's own 10MB per-file cap) so any instance can serve it, same as every other collection.
+export async function persistAttachment(record: AttachmentRecord, fileBuffer: Buffer): Promise<void> {
+  if (!isConnected || !attachmentsCol) return;
+  try {
+    await attachmentsCol.updateOne(
+      { id: record.id },
+      { $set: { ...record, data_base64: fileBuffer.toString('base64') } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('[MongoDB] Failed to persist attachment:', err);
+  }
+}
+
+// Metadata-only listing (excludes the base64 payload) — read straight from Mongo every
+// time, same as fetchCommentsForTaskFromMongo: attachments are low-volume per task, and a
+// sibling warm instance may have created attachments this instance never saw.
+export async function fetchAttachmentsByTaskFromMongo(taskId: string): Promise<AttachmentRecord[] | null> {
+  if (!isConnected || !attachmentsCol) return null;
+  try {
+    const docs = await attachmentsCol
+      .find({ task_id: taskId }, { projection: { data_base64: 0 } })
+      .sort({ created_at: -1 })
+      .toArray();
+    return docs.map((d: any) => {
+      const { _id, ...rest } = d;
+      return rest as AttachmentRecord;
+    });
+  } catch (err) {
+    console.error('[MongoDB] Failed to fetch attachments for task:', err);
+    return null;
+  }
+}
+
+// Fetches one attachment's full record INCLUDING its file bytes — used to self-heal a
+// download request that lands on an instance whose local disk never received this file.
+export async function fetchAttachmentByIdFromMongo(
+  attachmentId: string
+): Promise<{ record: AttachmentRecord; buffer: Buffer } | null> {
+  if (!isConnected || !attachmentsCol) return null;
+  try {
+    const doc = await attachmentsCol.findOne({ id: attachmentId });
+    if (!doc || !doc.data_base64) return null;
+    const { _id, data_base64, ...rest } = doc as any;
+    return { record: rest as AttachmentRecord, buffer: Buffer.from(data_base64, 'base64') };
+  } catch (err) {
+    console.error('[MongoDB] Failed to fetch attachment by id:', err);
+    return null;
+  }
+}
+
+export async function persistDeleteAttachment(attachmentId: string): Promise<void> {
+  if (!isConnected || !attachmentsCol) return;
+  try {
+    await attachmentsCol.deleteOne({ id: attachmentId });
+  } catch (err) {
+    console.error('[MongoDB] Failed to delete attachment:', err);
+  }
+}
+
 export async function persistChecklistItem(item: TaskChecklistItem): Promise<void> {
   if (!isConnected || !checklistCol) return;
   try {
@@ -538,6 +649,28 @@ export async function persistReminder(reminder: ReminderItem): Promise<void> {
     await remindersCol.updateOne({ id: reminder.id }, { $set: reminder as any }, { upsert: true });
   } catch (err) {
     console.error('[MongoDB] Failed to persist reminder:', err);
+  }
+}
+
+export async function persistPushSubscription(sub: PushSubscriptionRecord): Promise<void> {
+  if (!isConnected || !pushSubscriptionsCol) return;
+  try {
+    await pushSubscriptionsCol.updateOne(
+      { endpoint: sub.endpoint },
+      { $set: sub as any },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('[MongoDB] Failed to persist push subscription:', err);
+  }
+}
+
+export async function persistDeletePushSubscription(endpoint: string): Promise<void> {
+  if (!isConnected || !pushSubscriptionsCol) return;
+  try {
+    await pushSubscriptionsCol.deleteOne({ endpoint });
+  } catch (err) {
+    console.error('[MongoDB] Failed to delete push subscription:', err);
   }
 }
 

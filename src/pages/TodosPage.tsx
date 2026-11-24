@@ -39,6 +39,14 @@ const LIST_COLORS = [
   { name: 'Purple', value: 'purple', bg: 'bg-purple-500', text: 'text-purple-600', border: 'border-purple-200', lightBg: 'bg-purple-50' },
 ];
 
+// Blocks picking a past date for a todo's due date — local date (not UTC) so "today" matches
+// what the picker itself shows the person.
+function todayForDateInput(): string {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0, 10);
+}
+
 export function TodosPage() {
   const currentUser = useAuthStore((state) => state.user);
   const queryClient = useQueryClient();
@@ -1034,6 +1042,7 @@ export function TodosPage() {
               <input
                 type="date"
                 value={selectedTodo.due_date ? selectedTodo.due_date.split('T')[0] : ''}
+                min={todayForDateInput()}
                 onChange={(e) => {
                   const val = e.target.value ? `${e.target.value}T18:00:00.000Z` : null;
                   setSelectedTodo({ ...selectedTodo, due_date: val });

@@ -5,7 +5,14 @@
 import cron from 'node-cron';
 import { tasksStore, NotificationItem } from '../db/tasksStore';
 import { persistReminder } from '../db/mongodb';
+import { dbStore } from '../db/prisma';
 import { getIO } from '../sockets';
+import { sendPushToUser } from '../utils/push';
+
+function getUserDisplayName(userId?: string | null): string {
+  if (!userId) return 'Unassigned';
+  return dbStore.users.get(userId)?.name || userId;
+}
 
 /**
  * JOB 1 & 2: Overdue Sweep (Runs every 5 minutes)
@@ -66,12 +73,13 @@ export function runOverdueSweep() {
         };
         tasksStore.notifications.unshift(notifAssignee);
 
+        let notifAssigner: NotificationItem | null = null;
         if (task.created_by_id && task.created_by_id !== task.assigned_to_id) {
-          const notifAssigner: NotificationItem = {
+          notifAssigner = {
             id: 'notif-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
             user_id: task.created_by_id,
             title: `Task Overdue: ${task.title}`,
-            message: `Task "${task.title}" assigned to ${task.assigned_to_id} is now overdue.`,
+            message: `Task "${task.title}" assigned to ${getUserDisplayName(task.assigned_to_id)} is now overdue.`,
             type: 'OVERDUE',
             task_id: task.id,
             is_read: false,
@@ -95,9 +103,24 @@ export function runOverdueSweep() {
             io.to(`user:${task.assigned_to_id}`).emit('task:status_changed', payload);
             io.to(`user:${task.assigned_to_id}`).emit('notification:new', notifAssignee);
           }
-          if (task.created_by_id && task.created_by_id !== task.assigned_to_id) {
+          if (notifAssigner) {
             io.to(`user:${task.created_by_id}`).emit('task:status_changed', payload);
+            io.to(`user:${task.created_by_id}`).emit('notification:new', notifAssigner);
           }
+        }
+
+        // Ring on every subscribed device (phone or laptop) — independent of the socket
+        // emits above, which only reach an open foregrounded tab and are disabled entirely
+        // on Vercel.
+        if (task.assigned_to_id) {
+          sendPushToUser(task.assigned_to_id, notifAssignee.title, notifAssignee.message, {
+            taskId: task.id,
+          }).catch((e) => console.error('[cron] Failed to push overdue notice to assignee:', e));
+        }
+        if (notifAssigner && task.created_by_id) {
+          sendPushToUser(task.created_by_id, notifAssigner.title, notifAssigner.message, {
+            taskId: task.id,
+          }).catch((e) => console.error('[cron] Failed to push overdue notice to assigner:', e));
         }
       }
     }
@@ -152,6 +175,9 @@ export function runReminderDispatch() {
         if (io) {
           io.to(`user:${r.user_id}`).emit('notification:new', notif);
         }
+        sendPushToUser(r.user_id, notif.title, notif.message, { taskId: r.task_id }).catch((e) =>
+          console.error('[cron] Failed to push reminder:', e)
+        );
       }
     }
   } catch (err) {

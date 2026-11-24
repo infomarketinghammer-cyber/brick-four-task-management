@@ -7,6 +7,8 @@ import {
   persistActivityLog,
   persistNotification,
   persistReminder,
+  persistPushSubscription,
+  persistDeletePushSubscription,
   fetchTaskByIdFromMongo,
 } from './mongodb';
 
@@ -31,6 +33,17 @@ export interface NotificationItem {
   type: string;
   task_id?: string;
   is_read: boolean;
+  created_at: string;
+}
+
+// A browser/device's Web Push registration — lets the server ring a real OS-level
+// notification (with sound) on that device even while the tab is closed or backgrounded.
+// Keyed by `endpoint` since that's what the push service (FCM/Mozilla/etc.) hands out as
+// the unique identity of one subscribed device.
+export interface PushSubscriptionRecord {
+  endpoint: string;
+  user_id: string;
+  keys: { p256dh: string; auth: string };
   created_at: string;
 }
 
@@ -119,6 +132,13 @@ class TasksStore {
   public reminders: ReminderItem[] = new PersistedArray<ReminderItem>((r) => persistReminder(r));
   public notifications: NotificationItem[] = new PersistedArray<NotificationItem>((notif) =>
     persistNotification(notif)
+  );
+  public pushSubscriptions: Map<string, PushSubscriptionRecord> = new PersistedMap<
+    string,
+    PushSubscriptionRecord
+  >(
+    (sub) => persistPushSubscription(sub),
+    (endpoint) => persistDeletePushSubscription(endpoint)
   );
   public checklistItems: Map<string, TaskChecklistItem> = new PersistedMap<string, TaskChecklistItem>(
     (item) => persistChecklistItem(item),

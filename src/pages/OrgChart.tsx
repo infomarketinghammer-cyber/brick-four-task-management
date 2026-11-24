@@ -166,8 +166,8 @@ const FlowchartCard: React.FC<FlowchartCardProps> = ({
             <UserIcon size={18} className="text-white" />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="font-bold text-sm tracking-tight truncate text-white">{node.name}</h3>
-            <p className="text-[10px] text-rose-100 uppercase tracking-wider font-semibold">
+            <h3 className="font-bold text-base tracking-tight truncate text-white">{node.name}</h3>
+            <p className="text-[11px] text-rose-100 uppercase tracking-wider font-semibold">
               Director / CEO
             </p>
           </div>
@@ -197,7 +197,7 @@ const FlowchartCard: React.FC<FlowchartCardProps> = ({
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') onSelect(node);
       }}
-      className={`w-[168px] sm:w-[172px] cursor-pointer select-none rounded-xl bg-white border transition-all duration-200 transform hover:-translate-y-0.5 hover:shadow-md text-left ${
+      className={`w-[188px] sm:w-[196px] cursor-pointer select-none rounded-xl bg-white border transition-all duration-200 transform hover:-translate-y-0.5 hover:shadow-md text-left ${
         isMatch
           ? 'border-slate-300 shadow-xs hover:border-[#8B1E22]'
           : 'border-slate-200 shadow-none'
@@ -205,18 +205,18 @@ const FlowchartCard: React.FC<FlowchartCardProps> = ({
     >
       {/* Top Header: Rose Avatar Circle + Employee Name */}
       <div className="p-2.5 pb-2 flex items-center gap-2">
-        <div className="w-7 h-7 rounded-full bg-rose-50 border border-rose-200 text-[#8B1E22] flex items-center justify-center shrink-0">
-          <IconComponent size={14} className="stroke-[2.2]" />
+        <div className="w-8 h-8 rounded-full bg-rose-50 border border-rose-200 text-[#8B1E22] flex items-center justify-center shrink-0">
+          <IconComponent size={16} className="stroke-[2.2]" />
         </div>
         <div className="min-w-0 flex-1">
           <p
-            className="text-[11px] font-bold text-slate-900 leading-tight truncate"
+            className="text-sm font-bold text-slate-900 leading-tight truncate"
             title={node.name}
           >
             {node.name}
           </p>
           {node.employee_no && (
-            <span className="text-[9px] font-semibold text-slate-400 block truncate">
+            <span className="text-[10px] font-semibold text-slate-400 block truncate">
               {node.employee_no}
             </span>
           )}
@@ -228,11 +228,11 @@ const FlowchartCard: React.FC<FlowchartCardProps> = ({
 
       {/* Bottom Section: Department & Designation */}
       <div className="p-2.5 pt-1.5 bg-slate-50/70 rounded-b-xl min-h-[46px] flex flex-col justify-center">
-        <span className="text-[9px] font-medium text-slate-400 uppercase tracking-wider truncate block">
+        <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider truncate block">
           {node.department}
         </span>
         <p
-          className="text-[10px] font-bold text-slate-800 leading-tight line-clamp-2"
+          className="text-[11px] font-bold text-slate-800 leading-tight line-clamp-2"
           title={node.designation}
         >
           {node.designation}
@@ -528,7 +528,47 @@ export function OrgChart() {
   const handleZoomIn = () => setZoomLevel((prev) => Math.min(prev + 10, 140));
   const handleZoomOut = () => setZoomLevel((prev) => Math.max(prev - 10, 40));
   const handleZoomReset = () => setZoomLevel(100);
-  const handleFitWidth = () => setZoomLevel(60);
+
+  // Auto-fit-to-screen: measures the chart's actual (unscaled) rendered width against the
+  // viewport it's drawn in and picks a zoom level that shows the WHOLE tree without a
+  // horizontal scrollbar — instead of a fixed guessed percentage that drifts out of date
+  // as employees are added/removed and the tree gets wider or narrower.
+  const flowchartScrollRef = useRef<HTMLDivElement>(null);
+  const flowchartContentRef = useRef<HTMLDivElement>(null);
+
+  const fitChartToScreen = () => {
+    const container = flowchartScrollRef.current;
+    const content = flowchartContentRef.current;
+    if (!container || !content) return;
+    // scrollWidth/offsetWidth reflect the element's own unscaled layout box — a CSS
+    // transform: scale() changes only how it's painted, never what it measures as here.
+    const contentWidth = content.scrollWidth;
+    const availableWidth = container.clientWidth - 32; // leave a little breathing room
+    if (contentWidth <= 0 || availableWidth <= 0) return;
+    const fitScale = Math.min(1, availableWidth / contentWidth);
+    setZoomLevel(Math.max(30, Math.min(140, Math.round(fitScale * 100))));
+  };
+
+  // Re-fit whenever the roster (and therefore the tree's width) changes, and whenever the
+  // browser window/panel is resized — not just when the person clicks "Fit Width" by hand.
+  useEffect(() => {
+    if (viewMode !== 'flowchart' || !rootNode) return;
+    // The tree re-renders after this effect fires; wait a tick so scrollWidth reflects the
+    // new layout (new/removed cards) rather than the previous one.
+    const raf = requestAnimationFrame(() => requestAnimationFrame(fitChartToScreen));
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, rootNode, searchFilter, selectedDept]);
+
+  useEffect(() => {
+    if (viewMode !== 'flowchart') return;
+    const container = flowchartScrollRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitChartToScreen());
+    observer.observe(container);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
 
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard.writeText(text);
@@ -741,9 +781,9 @@ export function OrgChart() {
                 <RotateCcw size={14} />
               </button>
               <button
-                onClick={handleFitWidth}
+                onClick={fitChartToScreen}
                 className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors"
-                title="Fit Width"
+                title="Fit Whole Chart to Screen"
               >
                 <Maximize2 size={14} />
               </button>
@@ -773,9 +813,13 @@ export function OrgChart() {
       {/* FLOWCHART VIEW (Matches uploaded PDF diagram)                          */}
       {/* ====================================================================== */}
       {viewMode === 'flowchart' && (
-        <div className="bg-[#FAF9F9] rounded-2xl border border-slate-200/90 shadow-xs p-4 sm:p-6 overflow-x-auto overflow-y-visible relative min-h-[680px]">
+        <div
+          ref={flowchartScrollRef}
+          className="bg-[#FAF9F9] rounded-2xl border border-slate-200/90 shadow-xs p-4 sm:p-6 overflow-x-auto overflow-y-visible relative min-h-[680px]"
+        >
           {/* Zoom Wrapper */}
           <div
+            ref={flowchartContentRef}
             style={{
               transform: `scale(${zoomLevel / 100})`,
               transformOrigin: 'top center',

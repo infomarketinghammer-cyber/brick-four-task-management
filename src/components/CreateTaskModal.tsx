@@ -11,8 +11,6 @@ import {
   Italic,
   List,
   Code,
-  Eye,
-  Edit3,
   Repeat,
   Bell,
   Sparkles,
@@ -33,6 +31,15 @@ interface CreateTaskModalProps {
   onClose: () => void;
 }
 
+// Blocks picking a past date/time for a brand-new task's schedule — a task created with a
+// deadline already behind it would be marked OVERDUE the instant it's saved.
+function nowForDateTimeInput(): string {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0, 16);
+}
+
 export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((state) => state.user);
@@ -40,7 +47,6 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   // Form State
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [activeTab, setActiveTab] = useState<'write' | 'preview'>('write');
   const [createMode, setCreateMode] = useState<'TASK' | 'PROJECT'>('TASK');
   const [assignedToId, setAssignedToId] = useState('');
   const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
@@ -73,12 +79,14 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
       setCreateMode('TASK');
       setAssignedToId(currentUser.id);
       setAssigneeIds([]);
-      // Default dates
-      const now = new Date();
+      // Default dates — local time (not raw UTC), so they never start out below the
+      // local-time `min` the date pickers enforce in a positive-UTC-offset timezone.
+      const nowLocal = nowForDateTimeInput();
       const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      setStartDate(now.toISOString().slice(0, 16));
+      nextWeek.setMinutes(nextWeek.getMinutes() - nextWeek.getTimezoneOffset());
+      setStartDate(nowLocal);
       setDueDate(nextWeek.toISOString().slice(0, 16));
-      setAbsoluteScheduledAt(now.toISOString().slice(0, 16));
+      setAbsoluteScheduledAt(nowLocal);
     }
   }, [isOpen, currentUser]);
 
@@ -287,32 +295,9 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
 
           {/* Description Field with Rich Formatting */}
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-slate-700">Description (Rich Text)</label>
-              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('write')}
-                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md flex items-center gap-1 transition-all ${
-                    activeTab === 'write' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-500'
-                  }`}
-                >
-                  <Edit3 size={12} /> Write
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('preview')}
-                  className={`px-2.5 py-1 text-[11px] font-semibold rounded-md flex items-center gap-1 transition-all ${
-                    activeTab === 'preview' ? 'bg-white text-indigo-600 shadow-2xs' : 'text-slate-500'
-                  }`}
-                >
-                  <Eye size={12} /> Preview
-                </button>
-              </div>
-            </div>
+            <label className="text-xs font-bold text-slate-700">Description (Rich Text)</label>
 
-            {activeTab === 'write' ? (
-              <div className="border border-slate-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-500 bg-slate-50">
+            <div className="border border-slate-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-500 bg-slate-50">
                 {/* Formatting Bar */}
                 <div className="flex items-center gap-1 p-2 bg-slate-100/80 border-b border-slate-200 text-slate-600">
                   <button
@@ -356,15 +341,6 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
                   className="w-full p-3 bg-white text-xs text-slate-800 font-medium focus:outline-none resize-none"
                 />
               </div>
-            ) : (
-              <div className="p-3 border border-slate-200 rounded-xl bg-slate-50 min-h-[120px] text-xs text-slate-800 space-y-2">
-                <span className="text-[10px] uppercase font-bold text-slate-400 block">Sanitized HTML Preview:</span>
-                <div
-                  className="prose prose-xs max-w-none text-slate-800"
-                  dangerouslySetInnerHTML={{ __html: description || '<p class="text-slate-400 italic">No description provided.</p>' }}
-                />
-              </div>
-            )}
           </div>
 
           {/* Assignee & Priority Row */}
@@ -498,6 +474,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
               <input
                 type="datetime-local"
                 value={startDate}
+                min={nowForDateTimeInput()}
                 onChange={(e) => setStartDate(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
               />
@@ -511,6 +488,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
               <input
                 type="datetime-local"
                 value={dueDate}
+                min={nowForDateTimeInput()}
                 onChange={(e) => setDueDate(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
               />
@@ -616,6 +594,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
                   <input
                     type="datetime-local"
                     value={absoluteScheduledAt}
+                    min={nowForDateTimeInput()}
                     onChange={(e) => setAbsoluteScheduledAt(e.target.value)}
                     className="w-full px-3 py-2 bg-white border border-indigo-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-indigo-500"
                   />

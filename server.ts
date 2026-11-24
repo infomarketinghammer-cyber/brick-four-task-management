@@ -60,7 +60,13 @@ import {
   persistComment,
   fetchCommentsForTaskFromMongo,
   persistNotification,
+  fetchUserByIdFromMongo,
+  persistAttachment,
+  fetchAttachmentsByTaskFromMongo,
+  fetchAttachmentByIdFromMongo,
+  persistDeleteAttachment,
 } from './src/db/mongodb';
+import { sendPushToUser } from './src/utils/push';
 
 /** Builds the Express app with every API route. Shared by the long-running server and the Vercel function. */
 export function createApp() {
@@ -163,6 +169,12 @@ export function createApp() {
     } catch (e) {
       console.error('Failed to emit notification event:', e);
     }
+    // Rings on any device the user has subscribed from (phone or laptop), independent of
+    // the socket above — sockets only reach an open, foregrounded tab, and are disabled
+    // entirely on Vercel, whereas push works even when the tab/browser isn't open.
+    sendPushToUser(userId, title, message, { taskId, type }).catch((e) =>
+      console.error('Failed to send push notification:', e)
+    );
   }
 
   // DASHBOARD KPIS (supports both /dashboard/kpis and /reports/dashboard)
@@ -542,6 +554,19 @@ export function createApp() {
 
     if (!title) {
       return next(AppError.badRequest('Task title is required'));
+    }
+
+    // A brand-new task created with a deadline already in the past would be marked OVERDUE
+    // the instant it's saved — the UI's date pickers already block this, this is the
+    // server-side backstop for anyone bypassing them (direct API call, devtools, etc).
+    // Small grace window so a date picked a minute ago (while the form sat open) isn't
+    // rejected by the time the request actually arrives.
+    const BACKDATE_GRACE_MS = 5 * 60 * 1000;
+    if (due_date && new Date(due_date).getTime() < Date.now() - BACKDATE_GRACE_MS) {
+      return next(AppError.badRequest('Due date cannot be in the past'));
+    }
+    if (start_date && new Date(start_date).getTime() < Date.now() - BACKDATE_GRACE_MS) {
+      return next(AppError.badRequest('Start date cannot be in the past'));
     }
 
     const currentUser = req.fullUser || {
@@ -1211,6 +1236,11 @@ export function createApp() {
     if (!subordinate_id) {
       return next(AppError.badRequest('Subordinate ID is required for task delegation'));
     }
+    // Only validated when explicitly supplied — falling back to the parent task's own
+    // (possibly already-overdue) due_date below is normal cascading, not user backdating.
+    if (due_date && new Date(due_date).getTime() < Date.now() - 5 * 60 * 1000) {
+      return next(AppError.badRequest('Due date cannot be in the past'));
+    }
 
     const allUsers = Array.from(dbStore.users.values());
     const currentUser = req.fullUser || {
@@ -1439,22 +1469,11 @@ export function createApp() {
   });
 
   // MULTER CONFIGURATION FOR ATTACHMENT UPLOADS
-  const multerStorage = multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      if (!fs.existsSync(UPLOADS_DIR)) {
-        fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-      }
-      cb(null, UPLOADS_DIR);
-    },
-    filename: (_req, file, cb) => {
-      const random = Math.random().toString(36).substring(2, 8);
-      const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-      cb(null, `${Date.now()}-${random}-${sanitizedName}`);
-    },
-  });
-
+  // Buffered in memory (not written straight to disk): the bytes need to go to MongoDB
+  // anyway so every serverless instance can serve them (see persistAttachment below), and
+  // disk here is only a same-instance speed cache.
   const upload = multer({
-    storage: multerStorage,
+    storage: multer.memoryStorage(),
     limits: {
       fileSize: 10 * 1024 * 1024, // 10MB
       files: 5,
@@ -1492,7 +1511,7 @@ export function createApp() {
       return next(AppError.forbidden('You do not have permission to access or view this task'));
     }
 
-    upload.array('files', 5)(req, res, (err: any) => {
+    upload.array('files', 5)(req, res, async (err: any) => {
       if (err) {
         return next(AppError.badRequest(err.message || 'File upload failed'));
       }
@@ -1517,12 +1536,16 @@ export function createApp() {
 
       const createdRecords: AttachmentRecord[] = [];
       for (const file of files) {
+        const random = Math.random().toString(36).substring(2, 8);
+        const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const fileKey = `${Date.now()}-${random}-${sanitizedName}`;
+
         const record: AttachmentRecord = {
           id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           task_id: task.id,
           uploaded_by_id: currentUser.id,
           uploaded_by_name: currentUser.name || (currentUser as any).user_name || 'User',
-          file_key: file.filename,
+          file_key: fileKey,
           file_name: file.originalname,
           mime_type: file.mimetype,
           size_bytes: file.size,
@@ -1532,6 +1555,16 @@ export function createApp() {
         };
         attachmentsStore.create(record);
         createdRecords.push(record);
+
+        // Same-instance fast path (served straight off disk without a Mongo round trip);
+        // persistAttachment below is what actually makes the file reachable from every
+        // instance, which is the part this used to be missing entirely.
+        try {
+          fs.writeFileSync(path.join(UPLOADS_DIR, fileKey), file.buffer);
+        } catch (writeErr) {
+          console.error('[attachments] Failed to cache file to local disk:', writeErr);
+        }
+        await persistAttachment(record, file.buffer);
       }
 
       // Write ActivityLog entry
@@ -1552,7 +1585,7 @@ export function createApp() {
   });
 
   // GET /api/v1/tasks/:taskId/attachments
-  apiRouter.get('/tasks/:taskId/attachments', (req, res, next) => {
+  apiRouter.get('/tasks/:taskId/attachments', async (req, res, next) => {
     const taskId = req.params.taskId;
     const task = tasksStore.tasks.get(taskId);
     if (!task || task.is_deleted) {
@@ -1570,16 +1603,31 @@ export function createApp() {
       return next(AppError.forbidden('You do not have permission to view attachments for this task'));
     }
 
-    const attachments = attachmentsStore.getByTask(taskId);
+    // Read straight from MongoDB: attachments are low-volume per task, and a sibling warm
+    // instance may have accepted an upload this instance's in-memory map never saw.
+    const fromMongo = await fetchAttachmentsByTaskFromMongo(taskId);
+    const attachments = fromMongo ?? attachmentsStore.getByTask(taskId);
     res.json(sendSuccess(attachments));
   });
 
   // GET /api/v1/attachments/:id/download
-  apiRouter.get('/attachments/:id/download', (req, res, next) => {
+  apiRouter.get('/attachments/:id/download', async (req, res, next) => {
     const attId = req.params.id;
     let att = attachmentsStore.getById(attId);
     if (!att) {
       att = attachmentsStore.getByFileKey(attId);
+    }
+
+    // Self-heal from Mongo (the source of truth across instances) whenever the local
+    // in-memory record is missing — a sibling instance may have accepted this upload.
+    let mongoBuffer: Buffer | null = null;
+    if (!att) {
+      const fromMongo = await fetchAttachmentByIdFromMongo(attId);
+      if (fromMongo) {
+        att = fromMongo.record;
+        mongoBuffer = fromMongo.buffer;
+        attachmentsStore.create(att);
+      }
     }
 
     if (!att) {
@@ -1604,7 +1652,20 @@ export function createApp() {
 
     const filePath = path.join(UPLOADS_DIR, att.file_key);
     if (!fs.existsSync(filePath)) {
-      return next(AppError.notFound('File missing from disk storage'));
+      // Local disk cache miss (different instance, or this one cold-started since upload)
+      // — the record existed locally but its bytes didn't; fetch them from Mongo instead.
+      if (!mongoBuffer) {
+        const fromMongo = await fetchAttachmentByIdFromMongo(att.id);
+        mongoBuffer = fromMongo?.buffer || null;
+      }
+      if (!mongoBuffer) {
+        return next(AppError.notFound('File content not found'));
+      }
+      try {
+        fs.writeFileSync(filePath, mongoBuffer);
+      } catch (writeErr) {
+        console.error('[attachments] Failed to cache downloaded file to local disk:', writeErr);
+      }
     }
 
     res.setHeader('Content-Type', att.mime_type);
@@ -1656,9 +1717,16 @@ export function createApp() {
   });
 
   // DELETE /api/v1/attachments/:id
-  apiRouter.delete('/attachments/:id', (req, res, next) => {
+  apiRouter.delete('/attachments/:id', async (req, res, next) => {
     const attId = req.params.id;
-    const att = attachmentsStore.getById(attId);
+    let att = attachmentsStore.getById(attId);
+    if (!att) {
+      const fromMongo = await fetchAttachmentByIdFromMongo(attId);
+      if (fromMongo) {
+        att = fromMongo.record;
+        attachmentsStore.create(att);
+      }
+    }
     if (!att) {
       return next(AppError.notFound('Attachment not found'));
     }
@@ -1690,6 +1758,7 @@ export function createApp() {
     }
 
     const deleted = attachmentsStore.deleteById(att.id);
+    await persistDeleteAttachment(att.id);
     if (!deleted) {
       return next(AppError.notFound('Attachment could not be deleted'));
     }
@@ -1944,6 +2013,32 @@ export function createApp() {
     res.json(sendSuccess({ id: req.params.id, is_read: true }));
   });
 
+  // WEB PUSH — lets a device (phone or laptop) register to receive real OS-level
+  // notifications (with sound) for this user even while the tab/browser is closed.
+  apiRouter.get('/push/vapid-public-key', (req, res) => {
+    res.json(sendSuccess({ publicKey: process.env.VAPID_PUBLIC_KEY || '' }));
+  });
+  apiRouter.post('/push/subscribe', (req, res) => {
+    const userId = req.user?.id || '';
+    const { endpoint, keys } = req.body || {};
+    if (!endpoint || !keys?.p256dh || !keys?.auth) {
+      res.status(400).json({ success: false, error: { message: 'Invalid push subscription' } });
+      return;
+    }
+    tasksStore.pushSubscriptions.set(endpoint, {
+      endpoint,
+      user_id: userId,
+      keys: { p256dh: keys.p256dh, auth: keys.auth },
+      created_at: new Date().toISOString(),
+    });
+    res.json(sendSuccess({ subscribed: true }));
+  });
+  apiRouter.post('/push/unsubscribe', (req, res) => {
+    const { endpoint } = req.body || {};
+    if (endpoint) tasksStore.pushSubscriptions.delete(endpoint);
+    res.json(sendSuccess({ unsubscribed: true }));
+  });
+
   // Conversations & Messages Stateful Store
   interface ConversationParticipantData {
     id: string;
@@ -2096,7 +2191,7 @@ export function createApp() {
   // POST /conversations
   // - { recipient_id }                 -> create or get the 1:1 conversation
   // - { participant_ids[], name }      -> create a group conversation (anyone can chat with anyone)
-  apiRouter.post('/conversations', (req, res, next) => {
+  apiRouter.post('/conversations', async (req, res, next) => {
     const currentUserId = req.user?.id || '';
     const currentUserObj = dbStore.users.get(currentUserId);
     if (!currentUserObj) {
@@ -2112,9 +2207,14 @@ export function createApp() {
       }
 
       const memberIds = Array.from(new Set<string>([currentUserId, ...participant_ids.map(String)]));
-      const members = memberIds
-        .map((id) => dbStore.users.get(id))
-        .filter((u): u is User => Boolean(u && u.is_active));
+      // A just-created employee may not be in this instance's in-memory users cache yet
+      // (see fetchUserByIdFromMongo) — fall back to a direct Mongo lookup on a miss instead
+      // of failing the whole group with "member not found".
+      const members = (
+        await Promise.all(
+          memberIds.map(async (id) => dbStore.users.get(id) || (await fetchUserByIdFromMongo(id)))
+        )
+      ).filter((u): u is User => Boolean(u && u.is_active));
       if (members.length !== memberIds.length) {
         return next(AppError.badRequest('One or more selected members were not found'));
       }
@@ -2148,7 +2248,7 @@ export function createApp() {
       return next(AppError.badRequest('Cannot start a conversation with yourself'));
     }
 
-    const recipient = dbStore.users.get(recipient_id);
+    const recipient = dbStore.users.get(recipient_id) || (await fetchUserByIdFromMongo(recipient_id));
     if (!recipient) {
       return next(AppError.notFound('Recipient user not found'));
     }

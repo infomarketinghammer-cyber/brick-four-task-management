@@ -31,6 +31,7 @@ import { useCapabilities } from '../hooks/useCapabilities';
 import { DarodeJogLogo } from '../components/DarodeJogLogo';
 import { AdminAssistant } from '../components/AdminAssistant';
 import { playNotificationSound } from '../utils/notificationSound';
+import { registerForPushNotifications } from '../utils/webPushClient';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
 
 export function AppLayout() {
@@ -46,6 +47,12 @@ export function AppLayout() {
   const { user, logout, setAuth, updateUser } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Subscribes this device (phone or laptop) to receive real system notifications for
+  // overdue tasks/reminders even when this tab isn't open in the foreground.
+  useEffect(() => {
+    if (user?.id) registerForPushNotifications();
+  }, [user?.id]);
 
   // Notifications Query (Real-time polling)
   const { data: notificationsData = [] } = useQuery({

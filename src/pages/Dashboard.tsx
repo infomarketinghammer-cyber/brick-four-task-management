@@ -12,7 +12,6 @@ import {
   Plus,
   ArrowUpRight,
   Bell,
-  Activity,
   BarChart3,
   TrendingUp,
   Shield,
@@ -57,19 +56,6 @@ interface TeamLoadItem {
   overdueCount: number;
   completedCount: number;
   completionRate: number;
-}
-
-interface ActivityItem {
-  id: string;
-  task_id: string;
-  task_title: string;
-  user_id: string;
-  user_name: string;
-  action: string;
-  field_name?: string;
-  old_value?: string;
-  new_value?: string;
-  created_at: string;
 }
 
 interface ReminderItem {
@@ -153,16 +139,6 @@ export function Dashboard() {
     enabled: isManagerOrAdmin && !is_leaf_node,
   });
 
-  // 5. Fetch Activity Feed & Notifications
-  const { data: activityLogs, isLoading: isLoadingActivity } = useQuery<ActivityItem[]>({
-    queryKey: ['activity-feed'],
-    queryFn: async () => {
-      const res: any = await apiClient.get('/activity');
-      const data = Array.isArray(res) ? res : res?.data;
-      return Array.isArray(data) ? data : [];
-    },
-  });
-
   // 6. Fetch Upcoming Reminders
   const { data: reminders, isLoading: isLoadingReminders } = useQuery<ReminderItem[]>({
     queryKey: ['reminders'],
@@ -235,13 +211,6 @@ export function Dashboard() {
                 <span>New Task / Assign</span>
               </Link>
             )}
-            <Link
-              to="/org-chart"
-              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-xl border border-slate-700 inline-flex items-center gap-2 transition-all"
-            >
-              <GitFork size={16} />
-              <span>Org Chart</span>
-            </Link>
           </div>
         </div>
       </div>
@@ -544,47 +513,8 @@ export function Dashboard() {
         </div>
       )}
 
-      {/* Activity Feed & Reminders Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Activity Feed */}
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs flex flex-col">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Activity size={18} className="text-emerald-600" />
-              <span>Recent Activity Feed</span>
-            </h2>
-            <span className="text-[11px] font-semibold text-slate-400">Live</span>
-          </div>
-
-          <div className="space-y-4 flex-1 max-h-[360px] overflow-y-auto pr-1">
-            {isLoadingActivity ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-12 bg-slate-100 animate-pulse rounded-xl" />
-                ))}
-              </div>
-            ) : !activityLogs || activityLogs.length === 0 ? (
-              <p className="text-xs text-slate-500 py-6 text-center">No recent activity logged.</p>
-            ) : (
-              activityLogs.map((item) => (
-                <div key={item.id} className="flex gap-3 text-xs">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500 mt-1.5 flex-shrink-0" />
-                  <div className="space-y-0.5">
-                    <p className="text-slate-800">
-                      <span className="font-bold text-slate-900">{item.user_name}</span>{' '}
-                      <span className="text-slate-600">{item.action.replace(/_/g, ' ').toLowerCase()}</span>{' '}
-                      on <span className="font-semibold text-indigo-600">&quot;{item.task_title}&quot;</span>
-                    </p>
-                    <p className="text-[10px] text-slate-400">
-                      {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
+      {/* Upcoming Reminders Row */}
+      <div className="grid grid-cols-1 gap-6">
         {/* Upcoming Reminders Panel */}
         <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs flex flex-col">
           <div className="flex items-center justify-between mb-4">
