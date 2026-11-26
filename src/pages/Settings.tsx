@@ -8,7 +8,7 @@ export function Settings() {
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-2xl mx-auto">
       <div>
         <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
           <SettingsIcon className="text-indigo-600" size={28} />

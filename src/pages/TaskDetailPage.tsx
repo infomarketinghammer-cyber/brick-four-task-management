@@ -502,11 +502,6 @@ export function TaskDetailPage() {
                 {task.id}
               </span>
               <span className="text-[10px] font-bold text-slate-400">Depth L{task.depth || 0}</span>
-              {task.is_overdue && (
-                <span className="px-2 py-0.5 bg-red-600 text-white font-extrabold text-[10px] rounded-md uppercase tracking-wider flex items-center gap-1 shadow-2xs">
-                  <AlertTriangle size={10} /> Overdue
-                </span>
-              )}
               {task.status === 'COMPLETED' && (
                 task.completed_on_time === true ? (
                   <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-[10px] rounded-md flex items-center gap-1">
@@ -619,23 +614,18 @@ export function TaskDetailPage() {
 
       {/* OVERDUE RED BANNER */}
       {task.is_overdue && (
-        <div className="bg-red-50 border border-red-200 rounded-3xl p-4 flex items-center justify-between gap-3 text-red-800 shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-red-100 rounded-2xl shrink-0 text-red-600">
-              <AlertTriangle size={20} />
-            </div>
-            <div>
-              <p className="text-xs font-bold text-red-900">
-                Overdue since {task.overdue_since ? new Date(task.overdue_since).toLocaleString() : (task.due_date ? new Date(task.due_date).toLocaleString() : 'deadline')}.
-              </p>
-              <p className="text-[11px] text-red-700">
-                Completion after the deadline will be recorded as late.
-              </p>
-            </div>
+        <div className="bg-red-50 border border-red-200 rounded-3xl p-4 flex items-center gap-3 text-red-800 shadow-xs">
+          <div className="p-2 bg-red-100 rounded-2xl shrink-0 text-red-600">
+            <AlertTriangle size={20} />
           </div>
-          <span className="px-2.5 py-1 bg-red-600 text-white font-extrabold text-[10px] rounded-xl uppercase tracking-wider shrink-0 shadow-2xs">
-            Overdue
-          </span>
+          <div>
+            <p className="text-xs font-bold text-red-900">
+              Overdue since {task.overdue_since ? new Date(task.overdue_since).toLocaleString() : (task.due_date ? new Date(task.due_date).toLocaleString() : 'deadline')}.
+            </p>
+            <p className="text-[11px] text-red-700">
+              Completion after the deadline will be recorded as late.
+            </p>
+          </div>
         </div>
       )}
 

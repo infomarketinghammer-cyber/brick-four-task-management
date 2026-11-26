@@ -807,6 +807,24 @@ export function createApp() {
     ) {
       return next(AppError.forbidden('Only the task assigner can change the title, description, due date or assignee'));
     }
+    // Same backstop as task creation: a deadline can't be moved into the past. Only a CHANGED
+    // date is checked, so re-saving an already-overdue task with its existing due date still
+    // works; null clears the deadline.
+    let normalizedDueDate: string | null | undefined = due_date;
+    if (due_date !== undefined && due_date !== null && due_date !== '') {
+      const dueMs = new Date(due_date).getTime();
+      if (Number.isNaN(dueMs)) {
+        return next(AppError.badRequest('Due date is not a valid date'));
+      }
+      normalizedDueDate = new Date(dueMs).toISOString();
+      const currentMs = task.due_date ? new Date(task.due_date).getTime() : NaN;
+      const BACKDATE_GRACE_MS = 5 * 60 * 1000;
+      if (dueMs !== currentMs && dueMs < Date.now() - BACKDATE_GRACE_MS) {
+        return next(AppError.badRequest('Due date cannot be in the past'));
+      }
+    } else if (due_date === '') {
+      normalizedDueDate = null;
+    }
     if (assigned_to_id !== undefined && assigned_to_id !== task.assigned_to_id) {
       const newAssignee = dbStore.users.get(assigned_to_id);
       if (!newAssignee || !canAssignTask(currentUser, newAssignee, allUsers)) {
@@ -950,7 +968,7 @@ export function createApp() {
     if (assigned_to_id !== undefined) task.assigned_to_id = assigned_to_id;
     if (title !== undefined) task.title = title;
     if (description !== undefined) task.description = sanitizeRichText(description);
-    if (due_date !== undefined) task.due_date = due_date;
+    if (normalizedDueDate !== undefined) task.due_date = normalizedDueDate;
 
     task.updated_at = new Date().toISOString();
     tasksStore.tasks.set(task.id, task);

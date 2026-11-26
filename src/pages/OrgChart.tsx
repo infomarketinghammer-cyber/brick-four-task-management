@@ -476,7 +476,7 @@ export function OrgChart() {
   const [viewMode, setViewMode] = useState<'flowchart' | 'tree'>('flowchart');
   const [searchFilter, setSearchFilter] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>('ALL');
-  const [zoomLevel, setZoomLevel] = useState<number>(75);
+  const [zoomLevel, setZoomLevel] = useState<number>(100);
   const [selectedEmployee, setSelectedEmployee] = useState<OrgNode | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
@@ -529,10 +529,9 @@ export function OrgChart() {
   const handleZoomOut = () => setZoomLevel((prev) => Math.max(prev - 10, 40));
   const handleZoomReset = () => setZoomLevel(100);
 
-  // Auto-fit-to-screen: measures the chart's actual (unscaled) rendered width against the
-  // viewport it's drawn in and picks a zoom level that shows the WHOLE tree without a
-  // horizontal scrollbar — instead of a fixed guessed percentage that drifts out of date
-  // as employees are added/removed and the tree gets wider or narrower.
+  // Fit-to-screen (manual button): measures the chart's actual (unscaled) rendered width against
+  // the viewport it's drawn in and picks a zoom level that shows the WHOLE tree without a
+  // horizontal scrollbar.
   const flowchartScrollRef = useRef<HTMLDivElement>(null);
   const flowchartContentRef = useRef<HTMLDivElement>(null);
 
@@ -549,26 +548,8 @@ export function OrgChart() {
     setZoomLevel(Math.max(30, Math.min(140, Math.round(fitScale * 100))));
   };
 
-  // Re-fit whenever the roster (and therefore the tree's width) changes, and whenever the
-  // browser window/panel is resized — not just when the person clicks "Fit Width" by hand.
-  useEffect(() => {
-    if (viewMode !== 'flowchart' || !rootNode) return;
-    // The tree re-renders after this effect fires; wait a tick so scrollWidth reflects the
-    // new layout (new/removed cards) rather than the previous one.
-    const raf = requestAnimationFrame(() => requestAnimationFrame(fitChartToScreen));
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, rootNode, searchFilter, selectedDept]);
-
-  useEffect(() => {
-    if (viewMode !== 'flowchart') return;
-    const container = flowchartScrollRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => fitChartToScreen());
-    observer.observe(container);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode]);
+  // The chart opens at 100% so names stay readable; auto-fitting the whole tree on load made
+  // the cards too small to read. "Fit Whole Chart to Screen" is still available on demand.
 
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard.writeText(text);

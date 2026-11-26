@@ -185,55 +185,88 @@ async function fetchSnapshot(): Promise<ComplianceSnapshot> {
   const scorecards = new Map<string, EmployeeScorecard>();
   const unmatched = new Set<string>();
 
-  for (const kpi of kpis) {
+  // A KPI belongs to everyone the dashboard itself counts it for — mirrors the dashboard's
+  // EmployeePerformanceView rule: the KPI's owner, PLUS anyone with the KPI in `assignedKpis`
+  // or its KRA in `assignedKras`. Matching on ownerId alone missed staff (e.g. Vikas) whose
+  // KPIs are owned by their head but assigned to them.
+  const assigneesFor = (kpi: any): Array<{ email?: string; name: string; dashId: string }> => {
+    const out = new Map<string, { email?: string; name: string; dashId: string }>();
     const ownerId = String(kpi.ownerId || '');
-    const dashOwner: any = dashUserById.get(ownerId) || {};
-    const ownerName = kpi.ownerName || dashOwner.name || ownerId;
-    const localUser = matchUser({ email: dashOwner.email, name: ownerName });
-    if (!localUser) {
-      if (ownerName) unmatched.add(ownerName);
-      continue;
+    if (ownerId || kpi.ownerName) {
+      const dashOwner: any = dashUserById.get(ownerId) || {};
+      out.set(ownerId || `name:${kpi.ownerName}`, {
+        email: dashOwner.email,
+        name: kpi.ownerName || dashOwner.name || ownerId,
+        dashId: ownerId,
+      });
     }
-
-    let card = scorecards.get(localUser.id);
-    if (!card) {
-      card = {
-        user_id: localUser.id,
-        dashboard_owner_id: ownerId,
-        owner_name: ownerName,
-        kras: [],
-        kpi_count: 0,
-        recorded_count: 0,
-        overall_achievement: null,
-      };
-      scorecards.set(localUser.id, card);
+    for (const du of dashUsers) {
+      if (!du?.id || du.role === 'SUPER_ADMIN' || du.active === false || out.has(du.id)) continue;
+      const assignedKpis: unknown = du.assignedKpis;
+      const assignedKras: unknown = du.assignedKras;
+      if (
+        (Array.isArray(assignedKpis) && assignedKpis.includes(kpi.id)) ||
+        (Array.isArray(assignedKras) && kpi.kraId && assignedKras.includes(kpi.kraId))
+      ) {
+        out.set(du.id, { email: du.email, name: du.name || du.id, dashId: du.id });
+      }
     }
+    return Array.from(out.values());
+  };
 
-    const kra: any = kraById.get(kpi.kraId) || {};
-    let group = card.kras.find((g) => g.id === (kpi.kraId || 'unassigned'));
-    if (!group) {
-      group = {
-        id: kpi.kraId || 'unassigned',
-        number: kra.kraNumber ?? null,
-        name: kra.name || 'Unassigned KRA',
-        kpis: [],
-      };
-      card.kras.push(group);
+  for (const kpi of kpis) {
+    for (const assignee of assigneesFor(kpi)) {
+      const ownerId = assignee.dashId;
+      const ownerName = assignee.name;
+      const localUser = matchUser({ email: assignee.email, name: ownerName });
+      if (!localUser) {
+        if (ownerName) unmatched.add(ownerName);
+        continue;
+      }
+
+      let card = scorecards.get(localUser.id);
+      if (!card) {
+        card = {
+          user_id: localUser.id,
+          dashboard_owner_id: ownerId,
+          owner_name: ownerName,
+          kras: [],
+          kpi_count: 0,
+          recorded_count: 0,
+          overall_achievement: null,
+        };
+        scorecards.set(localUser.id, card);
+      }
+
+      const kra: any = kraById.get(kpi.kraId) || {};
+      let group = card.kras.find((g) => g.id === (kpi.kraId || 'unassigned'));
+      if (!group) {
+        group = {
+          id: kpi.kraId || 'unassigned',
+          number: kra.kraNumber ?? null,
+          name: kra.name || 'Unassigned KRA',
+          kpis: [],
+        };
+        card.kras.push(group);
+      }
+
+      // Same KPI reached through two rules (e.g. owner AND assigned KRA) is listed once
+      if (group.kpis.some((existing) => existing.id === kpi.id)) continue;
+
+      const m: any = measurementByKpi.get(kpi.id);
+      group.kpis.push({
+        id: kpi.id,
+        code: kpi.kpiCode || '',
+        name: kpi.name || kpi.kpiCode || 'KPI',
+        target: num(kpi.targetValue),
+        unit: kpi.unit || '',
+        weight: num(kpi.weight),
+        actual: m ? num(m.actual ?? m.actualValue) : null,
+        achievement: m ? num(m.achievement) : null,
+        weighted_score: m ? num(m.weightedScore) : null,
+        status: m?.status || null,
+      });
     }
-
-    const m: any = measurementByKpi.get(kpi.id);
-    group.kpis.push({
-      id: kpi.id,
-      code: kpi.kpiCode || '',
-      name: kpi.name || kpi.kpiCode || 'KPI',
-      target: num(kpi.targetValue),
-      unit: kpi.unit || '',
-      weight: num(kpi.weight),
-      actual: m ? num(m.actual ?? m.actualValue) : null,
-      achievement: m ? num(m.achievement) : null,
-      weighted_score: m ? num(m.weightedScore) : null,
-      status: m?.status || null,
-    });
   }
 
   // Overall % per employee: KPI-weight-averaged achievement (unrecorded KPIs count as 0%)

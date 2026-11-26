@@ -400,8 +400,10 @@ export const CalendarPage: React.FC = () => {
               eventDrop={handleEventDropOrResize}
               eventResize={handleEventDropOrResize}
               eventContent={renderEventContent}
-              height="auto"
-              aspectRatio={1.6}
+              // A fixed height (same across every view, Agenda included) keeps the page from
+              // growing unbounded when a month has a lot of events — FullCalendar scrolls
+              // internally past this height instead of pushing the rest of the page down.
+              height={650}
               datesSet={(dateInfo) => {
                 setTitleHeader(dateInfo.view.title);
               }}

@@ -452,14 +452,10 @@ export function TasksPage() {
                       <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${getPriorityBadge(t.priority)}`}>
                         {t.priority}
                       </span>
-                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${getStatusBadge(t.status)}`}>
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-1 ${getStatusBadge(t.status)}`}>
+                        {t.status === 'OVERDUE' && <AlertTriangle size={10} />}
                         {t.status.replace('_', ' ')}
                       </span>
-                      {t.is_overdue && (
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold bg-red-600 text-white flex items-center gap-1 uppercase tracking-wider shadow-2xs">
-                          <AlertTriangle size={10} /> OVERDUE
-                        </span>
-                      )}
                       {t.status === 'COMPLETED' && (
                         t.completed_on_time === true ? (
                           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
@@ -678,11 +674,6 @@ export function TasksPage() {
                             <span className={`px-2 py-0.5 rounded-md text-[9px] font-bold border ${getPriorityBadge(t.priority)}`}>
                               {t.priority}
                             </span>
-                            {t.is_overdue && (
-                              <span className="px-1.5 py-0.5 bg-red-600 text-white font-extrabold text-[9px] rounded-md uppercase tracking-wider">
-                                OVERDUE
-                              </span>
-                            )}
                             {t.status === 'COMPLETED' && (
                               t.completed_on_time === true ? (
                                 <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-[9px] rounded-md">

@@ -148,7 +148,7 @@ export function AppLayout() {
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row text-slate-900 font-sans antialiased">
       {/* Desktop Sidebar */}
       <aside
-        className={`hidden md:flex flex-col bg-slate-950 text-white transition-all duration-300 relative border-r border-slate-800 z-30 ${
+        className={`hidden md:flex flex-col bg-slate-950 text-white transition-all duration-300 relative border-r border-slate-800 z-30 md:sticky md:top-0 md:h-screen md:shrink-0 ${
           sidebarCollapsed ? 'w-20' : 'w-[268px]'
         }`}
       >
@@ -199,7 +199,7 @@ export function AppLayout() {
         )}
 
         {/* Navigation Items */}
-        <nav className="flex-1 py-4 px-3 space-y-1">
+        <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
           {filteredNavItems.map((item) => {
             const isActive = location.pathname === item.path;
             const Icon = item.icon;
@@ -222,7 +222,7 @@ export function AppLayout() {
         </nav>
 
         {/* Footer info / Logout */}
-        <div className="p-3 border-t border-slate-800">
+        <div className="p-3 border-t border-slate-800 shrink-0">
           <button
             onClick={logout}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 hover:text-red-400 hover:bg-red-950/20 transition-colors"

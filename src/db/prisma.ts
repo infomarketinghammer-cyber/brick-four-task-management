@@ -319,6 +319,21 @@ class InMemoryDatabase {
         hierarchy_level: 3,
         manager_id: 'usr-kapil-010',
       },
+      // Level 4 under Sonal Bhorkade
+      {
+        id: 'usr-bhagyashree-074',
+        name: 'Bhagyashree Patil',
+        email: 'bp2664619@gmail.com',
+        phone: '9373752741',
+        employee_no: 'BRKF074',
+        designation: 'Telecalling Executive',
+        department: 'Sales',
+        location: 'Yerwada',
+        date_of_joining: '2026-08-19',
+        role: 'EXECUTIVE',
+        hierarchy_level: 3,
+        manager_id: 'usr-sonal-023',
+      },
       {
         id: 'usr-nishant-070',
         name: 'Nishant Hemant Kale',

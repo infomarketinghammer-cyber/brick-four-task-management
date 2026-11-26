@@ -329,11 +329,7 @@ export function TeamManagement() {
                       <p className="text-[11px] text-slate-500">{user.department}</p>
                     </td>
                     <td className="py-4 px-4">
-                      {user.is_active ? (
-                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 text-[10px] font-bold border border-emerald-200">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Active
-                        </span>
-                      ) : (
+                      {!user.is_active && (
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold border border-slate-200">
                           Inactive
                         </span>
