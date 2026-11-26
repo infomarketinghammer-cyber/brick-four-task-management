@@ -130,21 +130,43 @@ export const CalendarEventDetailModal: React.FC<CalendarEventDetailModalProps> =
 
   const formatDateRange = (startStr: string, endStr: string, isAllDay: boolean) => {
     const s = new Date(startStr);
-    const e = new Date(endStr);
+    let e = endStr ? new Date(endStr) : s;
+    if (Number.isNaN(e.getTime()) || e < s) e = s;
 
-    if (isAllDay) {
-      return s.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    // All-day events dragged/selected on the calendar can carry an exclusive end
+    // (midnight of the day AFTER the last day) — show the last day the event actually covers.
+    if (
+      isAllDay &&
+      e > s &&
+      e.getHours() === 0 &&
+      e.getMinutes() === 0 &&
+      e.getSeconds() === 0 &&
+      e.getMilliseconds() === 0
+    ) {
+      e = new Date(e.getTime() - 1);
     }
 
-    const dateFormatted = s.toLocaleDateString(undefined, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-    });
-    const startTime = s.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const endTime = e.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const sameDay = s.toDateString() === e.toDateString();
+    const sameYear = s.getFullYear() === e.getFullYear();
+    const fmtDate = (d: Date, withYear: boolean) =>
+      d.toLocaleDateString(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        ...(withYear ? { year: 'numeric' } : {}),
+      });
+    const fmtTime = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    return `${dateFormatted} · ${startTime} – ${endTime}`;
+    if (isAllDay) {
+      // e.g. "Thu, Dec 4 – Wed, Dec 10" for a multi-day event
+      return sameDay ? fmtDate(s, false) : `${fmtDate(s, !sameYear)} – ${fmtDate(e, !sameYear)}`;
+    }
+
+    if (sameDay) {
+      return `${fmtDate(s, false)} · ${fmtTime(s)} – ${fmtTime(e)}`;
+    }
+    // Timed event spanning several days: show both dates with their times
+    return `${fmtDate(s, !sameYear)}, ${fmtTime(s)} – ${fmtDate(e, !sameYear)}, ${fmtTime(e)}`;
   };
 
   const getStatusBadge = (status: InviteStatus) => {
