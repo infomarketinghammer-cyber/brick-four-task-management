@@ -40,6 +40,30 @@ function nowForDateTimeInput(): string {
   return now.toISOString().slice(0, 16);
 }
 
+// Due time is picked as a half of the working day instead of an exact clock time.
+// The task is due by the END of the chosen half.
+type DueHalf = 'FIRST' | 'SECOND';
+const DUE_HALVES: Record<DueHalf, { label: string; hint: string; hour: number; minute: number }> = {
+  FIRST: { label: '1st Half', hint: 'by 1:00 PM', hour: 13, minute: 0 },
+  SECOND: { label: '2nd Half', hint: 'by 6:00 PM', hour: 18, minute: 0 },
+};
+
+// Local calendar date as YYYY-MM-DD (what <input type="date"> expects), offset by `addDays`.
+function localDateInput(addDays = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() + addDays);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+// Builds a local Date from a YYYY-MM-DD string at the given local time.
+function localDateAt(dateStr: string, hour: number, minute: number): Date | null {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d, hour, minute, 0, 0);
+}
+
 export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((state) => state.user);
@@ -53,6 +77,7 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
   const [priority, setPriority] = useState<TaskPriority>('CRITICAL');
   const [startDate, setStartDate] = useState('');
   const [dueDate, setDueDate] = useState('');
+  const [dueHalf, setDueHalf] = useState<DueHalf>('SECOND');
 
   // Recurrence State
   const [isRecurring, setIsRecurring] = useState(false);
@@ -82,10 +107,9 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
       // Default dates — local time (not raw UTC), so they never start out below the
       // local-time `min` the date pickers enforce in a positive-UTC-offset timezone.
       const nowLocal = nowForDateTimeInput();
-      const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      nextWeek.setMinutes(nextWeek.getMinutes() - nextWeek.getTimezoneOffset());
-      setStartDate(nowLocal);
-      setDueDate(nextWeek.toISOString().slice(0, 16));
+      setStartDate(localDateInput(0));
+      setDueDate(localDateInput(7));
+      setDueHalf('SECOND');
       setAbsoluteScheduledAt(nowLocal);
     }
   }, [isOpen, currentUser]);
@@ -156,6 +180,27 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
       return;
     }
 
+    // Start: date only. Today → "now" (so it's never treated as a past start); a later
+    // day → the start of that day.
+    const today = localDateInput(0);
+    const startAt =
+      !startDate || startDate === today ? new Date() : localDateAt(startDate, 0, 0) || new Date();
+    const half = DUE_HALVES[dueHalf];
+    const dueAt = dueDate ? localDateAt(dueDate, half.hour, half.minute) : null;
+
+    if (dueDate && !dueAt) {
+      setErrorMessage('Please pick a valid due date');
+      return;
+    }
+    if (dueAt && dueAt.getTime() <= Date.now()) {
+      setErrorMessage(`The ${half.label} of that day has already passed — choose the 2nd Half or a later date`);
+      return;
+    }
+    if (dueAt && dueAt.getTime() < startAt.getTime()) {
+      setErrorMessage('Due date cannot be before the start date');
+      return;
+    }
+
     const reminders = [];
     if (enableReminder) {
       if (reminderType === 'RELATIVE') {
@@ -179,8 +224,8 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
             task_type: 'PROJECT' as const,
             assignee_ids: assigneeIds,
             priority,
-            start_date: startDate ? new Date(startDate).toISOString() : new Date().toISOString(),
-            due_date: dueDate ? new Date(dueDate).toISOString() : null,
+            start_date: startAt.toISOString(),
+            due_date: dueAt ? dueAt.toISOString() : null,
             is_recurring: isRecurring,
             recurrence_pattern: isRecurring ? recurrencePattern : null,
             reminders,
@@ -190,8 +235,8 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
             description,
             assigned_to_id: assignedToId || currentUser?.id,
             priority,
-            start_date: startDate ? new Date(startDate).toISOString() : new Date().toISOString(),
-            due_date: dueDate ? new Date(dueDate).toISOString() : null,
+            start_date: startAt.toISOString(),
+            due_date: dueAt ? dueAt.toISOString() : null,
             is_recurring: isRecurring,
             recurrence_pattern: isRecurring ? recurrencePattern : null,
             reminders,
@@ -472,9 +517,9 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
                 <span>Start Date</span>
               </label>
               <input
-                type="datetime-local"
+                type="date"
                 value={startDate}
-                min={nowForDateTimeInput()}
+                min={localDateInput(0)}
                 onChange={(e) => setStartDate(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
               />
@@ -486,12 +531,39 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
                 <span>Due Date</span>
               </label>
               <input
-                type="datetime-local"
+                type="date"
                 value={dueDate}
-                min={nowForDateTimeInput()}
+                min={startDate || localDateInput(0)}
                 onChange={(e) => setDueDate(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-500"
               />
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                {(Object.keys(DUE_HALVES) as DueHalf[]).map((key) => {
+                  const h = DUE_HALVES[key];
+                  const end = dueDate ? localDateAt(dueDate, h.hour, h.minute) : null;
+                  const passed = Boolean(end && end.getTime() <= Date.now());
+                  const active = dueHalf === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      disabled={passed}
+                      onClick={() => setDueHalf(key)}
+                      title={passed ? 'This half of the day has already passed' : `Due ${h.hint}`}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-colors ${
+                        active && !passed
+                          ? 'bg-indigo-600 border-indigo-600 text-white'
+                          : 'bg-white border-slate-200 text-slate-700 hover:border-indigo-300'
+                      } ${passed ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      {h.label}
+                      <span className={`block text-[10px] font-medium ${active && !passed ? 'text-indigo-100' : 'text-slate-400'}`}>
+                        {h.hint}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 

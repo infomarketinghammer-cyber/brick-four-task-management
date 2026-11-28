@@ -115,12 +115,13 @@ export function getCategoryTextColor(colorHex?: string | null, category?: string
 }
 
 /**
- * Color swatches available in modal with category correlation
+ * Color swatches available in modal with category correlation.
+ * Purple is intentionally NOT offered: it is reserved for "Assigned Tasks" on the calendar,
+ * so a manually scheduled event can't be mistaken for a task.
  */
 export const COLOR_SWATCHES = [
   { label: 'Team Meetings (Blue)', value: '#2563eb', bg: 'bg-blue-600', categoryKey: 'MEETING' },
   { label: 'Client Meetings (Green)', value: '#10b981', bg: 'bg-emerald-500', categoryKey: 'CLIENT_MEETING' },
-  { label: 'Assigned Tasks (Purple)', value: '#8b5cf6', bg: 'bg-purple-500', categoryKey: 'TASK' },
   { label: 'Task Deadlines (Red)', value: '#ef4444', bg: 'bg-red-500', categoryKey: 'DEADLINE' },
   { label: 'Reminders (Yellow)', value: '#eab308', bg: 'bg-yellow-500', categoryKey: 'REMINDER' },
   { label: 'Holidays / Rest (Grey)', value: '#64748b', bg: 'bg-slate-500', categoryKey: 'HOLIDAY' },
